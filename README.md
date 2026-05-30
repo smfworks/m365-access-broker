@@ -1,4 +1,7 @@
-# OpenClaw M365 Access Broker
+# M365 Access Broker
+
+> A local control plane that gates every Microsoft Graph action an autonomous AI agent takes —
+> enforcing auth, scopes, allowlists, approval gates, an injection firewall, and audit logging.
 
 The control plane between a local-first autonomous agent (OpenClaw) and Microsoft 365.
 OpenClaw keeps its strengths — local autonomy, persistent memory — while every Microsoft Graph
@@ -45,22 +48,41 @@ OpenClaw agent ──HTTP──> Broker ──MSAL+Graph──> Microsoft 365
 | `src/broker.js`  | Orchestrator: policy → approval → execute → firewall → audit. |
 | `src/server.js`  | Loopback HTTP API for the local agent. |
 
+## Prerequisites
+
+- **Node.js >= 20** (uses the built-in `node:test` runner and native `fetch` — no test framework, zero runtime dependencies).
+- That's it for dry-run mode. Live mode additionally needs an Entra app registration and `@azure/msal-node` (see [Going live](#going-live)).
+
+## Installation
+
+```bash
+git clone https://github.com/smfworks/m365-access-broker.git
+cd m365-access-broker
+npm install        # no dependencies to fetch in dry-run; sets up scripts
+```
+
 ## Quick start
 
 No credentials required — the broker defaults to **dry-run** mode with deterministic mock data.
 
 ```bash
-npm test          # 17 unit tests (node:test, zero deps)
+npm test          # 43 unit + integration tests (node:test, zero deps)
 npm start         # serves http://127.0.0.1:8787
 ```
 
+Then exercise the API. The broker requires an agent key (`x-broker-key`); if you don't set
+one, the server prints an ephemeral key at startup — copy it into `$AGENT` below.
+
 ```bash
 curl http://127.0.0.1:8787/health
-curl http://127.0.0.1:8787/tools
+curl http://127.0.0.1:8787/tools -H "x-broker-key: $AGENT"
 curl -X POST http://127.0.0.1:8787/execute \
-  -H "Content-Type: application/json" \
+  -H "x-broker-key: $AGENT" -H "Content-Type: application/json" \
   -d '{"tool":"search_mail","args":{"query":"aiona"}}'
 ```
+
+> **Windows / PowerShell:** use `Invoke-RestMethod` instead of `curl`, e.g.
+> `Invoke-RestMethod -Method POST -Uri http://127.0.0.1:8787/execute -Headers @{'x-broker-key'=$AGENT} -ContentType 'application/json' -Body '{"tool":"m365_status"}'`
 
 ## Approval gate in action
 
@@ -114,6 +136,27 @@ Anything not on the allowlist (e.g. `run_graph_query`) is rejected outright.
 
 Start with read-only scopes (`User.Read`, `Calendars.Read`, `Mail.Read`, `Files.Read`);
 add write scopes only after the read paths work.
+
+## Configuration
+
+All configuration is via environment variables (or a `.env` file — copy `.env.example` to
+`.env`). The broker reads `.env` automatically; no `dotenv` dependency.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `BROKER_DRY_RUN` | `true` | `true` = mock Graph, no network. Set `false` for live Graph. |
+| `BROKER_PORT` | `8787` | Loopback HTTP port (binds `127.0.0.1` only). |
+| `BROKER_KEY` | _(ephemeral)_ | Agent credential (`x-broker-key`) for read/draft/execute. Auto-generated + printed if unset. |
+| `BROKER_APPROVER_KEY` | _(ephemeral)_ | Host-UI credential (`x-approver-key`) for minting approvals. Keep separate from `BROKER_KEY`. |
+| `BROKER_AUDIT_LOG` | `audit.log` | Path to the JSON-lines audit log. |
+| `MS_TENANT_ID` | — | Entra tenant ID (live mode). |
+| `MS_CLIENT_ID` | — | Entra app (client) ID (live mode). |
+| `MS_CLIENT_SECRET` | — | Client secret (not needed for public-client PKCE). |
+| `MS_REDIRECT_URI` | `http://localhost:3000/auth/callback` | OAuth redirect (live mode). |
+
+> The agent key and approver key are **intentionally separate** so the agent can never grant
+> its own approval. There is no "no auth" mode — if a key is unset, an ephemeral one is
+> generated and printed at startup.
 
 ## Audit log
 
@@ -172,3 +215,33 @@ node bin/lint-memory.js ./memory --json                    # machine-readable fo
 ```
 
 Exit code `2` when issues exist, so it can gate memory promotion or CI.
+
+## Testing
+
+```bash
+npm test                       # full suite (43 tests)
+node --test test/policy.test.js # a single file
+```
+
+Tests use Node's built-in runner — no Jest/Mocha, no install step. The injection-firewall
+red-team corpus (`data/injection-corpus.json`) runs as part of the suite and fails on any
+false positive or false negative.
+
+## Project layout
+
+```text
+src/        broker, policy, approvals, audit, graphClient, tools, catalog, firewall, memoryLinter, server
+test/       unit + integration tests and fixtures
+bin/        lint-memory.js CLI entry point
+data/       injection-corpus.json red-team eval set
+```
+
+## Contributing
+
+Issues and pull requests are welcome. Please keep the zero-dependency, dry-run-by-default
+posture: new tools go through the catalog + policy engine, and any tool that sends, shares,
+deletes, or commits must be classed `outbound`/`destructive` so it requires approval.
+
+## License
+
+[MIT](./LICENSE) © 2026 Michael Gannotti / SMF Works.
