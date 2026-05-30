@@ -1,5 +1,9 @@
 # M365 Access Broker
 
+[![CI](https://github.com/smfworks/m365-access-broker/actions/workflows/ci.yml/badge.svg)](https://github.com/smfworks/m365-access-broker/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+[![Node >= 20](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org)
+
 > A local control plane that gates every Microsoft Graph action an autonomous AI agent takes —
 > enforcing auth, scopes, allowlists, approval gates, an injection firewall, and audit logging.
 
