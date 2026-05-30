@@ -30,3 +30,29 @@ jobs:
         run: npm test
         env:
           BROKER_DRY_RUN: "true"
+
+      - name: Memory linter CLI (end-to-end)
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 1. A clean vault must pass with exit 0 (guards against false positives).
+          mkdir -p "$RUNNER_TEMP/clean-vault"
+          cp test/fixtures/memory/clean.md "$RUNNER_TEMP/clean-vault/"
+          node bin/lint-memory.js "$RUNNER_TEMP/clean-vault"
+          echo "✓ clean vault passed (exit 0)"
+          # 2. The dirty fixtures must be flagged (linter exits non-zero). Invert so
+          #    a correct detection is a CI success, and a missed detection fails CI.
+          if node bin/lint-memory.js test/fixtures/memory --out "$RUNNER_TEMP/memory-hygiene-report.md"; then
+            echo "::error::memory linter failed to flag dirty fixtures"
+            exit 1
+          else
+            echo "✓ dirty fixtures correctly flagged (non-zero exit)"
+          fi
+
+      - name: Upload memory hygiene report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: memory-hygiene-report-node${{ matrix.node }}
+          path: ${{ runner.temp }}/memory-hygiene-report.md
+          if-no-files-found: ignore
