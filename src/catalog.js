@@ -81,8 +81,12 @@ export const DEFAULT_ALLOWLIST = Object.freeze([
 ]);
 
 export function requiresApprovalByClass(sensitivity) {
-  return (
-    sensitivity === SENSITIVITY.OUTBOUND ||
-    sensitivity === SENSITIVITY.DESTRUCTIVE
-  );
+  // Fail closed: only the two explicitly low-risk classes skip approval. Any
+  // unknown, misspelled, or missing sensitivity requires approval rather than
+  // silently passing through ungated.
+  return sensitivity !== SENSITIVITY.READ && sensitivity !== SENSITIVITY.WRITE;
+}
+
+export function isKnownSensitivity(sensitivity) {
+  return Object.values(SENSITIVITY).includes(sensitivity);
 }

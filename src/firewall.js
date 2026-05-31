@@ -46,6 +46,12 @@ function riskFromScore(score) {
 
 /**
  * Scan untrusted text. Returns findings + a max-severity risk label.
+ *
+ * To defeat trivial evasions, every rule is evaluated against three views of the
+ * text: the original (so zero-width/base64/HTML-comment rules still see their
+ * markers), a copy with zero-width characters removed (so hidden separators
+ * cannot downgrade risk), and a newline-flattened copy (so line breaks inserted
+ * between trigger words cannot slip past bounded `[^.\n]` patterns).
  * @param {string} text
  */
 export function scanContent(text) {
@@ -53,17 +59,26 @@ export function scanContent(text) {
   if (typeof text !== 'string' || text.length === 0) {
     return { risk: 'none', score: 0, findings };
   }
+  const zwStripped = text.replace(ZERO_WIDTH, '');
+  const flattened = zwStripped.replace(/[\r\n]+/g, ' ');
+  const variants = [text, zwStripped, flattened];
+  const seen = new Set();
   let maxScore = 0;
   for (const rule of RULES) {
-    const m = rule.re.exec(text);
-    if (m) {
-      findings.push({
-        id: rule.id,
-        severity: rule.severity,
-        why: rule.why,
-        match: m[0].slice(0, 80),
-      });
+    for (const variant of variants) {
+      const m = rule.re.exec(variant);
+      if (!m) continue;
+      if (!seen.has(rule.id)) {
+        seen.add(rule.id);
+        findings.push({
+          id: rule.id,
+          severity: rule.severity,
+          why: rule.why,
+          match: m[0].slice(0, 80),
+        });
+      }
       if (rule.severity > maxScore) maxScore = rule.severity;
+      break;
     }
   }
   return { risk: riskFromScore(maxScore), score: maxScore, findings };
@@ -78,9 +93,18 @@ export function sanitize(text, { source = 'unknown', maxLen = 100_000 } = {}) {
   const raw = typeof text === 'string' ? text : JSON.stringify(text ?? '');
   const verdict = scanContent(raw);
   const cleaned = raw.replace(ZERO_WIDTH, '').slice(0, maxLen);
+  // Escape the source so it cannot break out of the attribute, and neutralize
+  // any wrapper tags inside the body so untrusted content cannot forge an early
+  // </external_content> and escape the evidence envelope.
+  const safeSource = String(source)
+    .replace(/&/g, '&amp;')
+    .replace(/"/g, '&quot;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+  const safeBody = cleaned.replace(/<(\/?)(external_content)/gi, '&lt;$1$2');
   const wrapped =
-    `<external_content source="${source}" risk="${verdict.risk}">\n` +
-    `${cleaned}\n` +
+    `<external_content source="${safeSource}" risk="${verdict.risk}">\n` +
+    `${safeBody}\n` +
     `</external_content>`;
   return { wrapped, risk: verdict.risk, findings: verdict.findings, source };
 }

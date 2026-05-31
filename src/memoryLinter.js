@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, lstatSync } from 'node:fs';
 import { resolve, join, relative } from 'node:path';
 
 // Memory hygiene linter for OpenClaw's agent memory layer.
@@ -78,9 +78,18 @@ function listMarkdown(dir) {
   const out = [];
   for (const name of readdirSync(dir)) {
     const full = join(dir, name);
-    const st = statSync(full);
+    let st;
+    // lstat (not stat) so symlinks are inspected without being followed — a
+    // symlink in the memory dir must not let the scan traverse outside the vault
+    // or loop through an ancestor.
+    try {
+      st = lstatSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isSymbolicLink()) continue;
     if (st.isDirectory()) out.push(...listMarkdown(full));
-    else if (name.endsWith('.md')) out.push(full);
+    else if (st.isFile() && name.endsWith('.md')) out.push(full);
   }
   return out;
 }
@@ -125,10 +134,14 @@ export function lintMemory(memoryDir, options = {}) {
       }
     }
 
-    // 4. Secrets stored in memory (scan body only — our own frontmatter keys
-    // are structured metadata, not secret material).
+    // 4. Secrets stored in memory. Scan both the body and the frontmatter
+    // values — a secret pasted into a frontmatter field (e.g. client_secret:)
+    // is exactly what this check exists to catch.
+    const fmScan = Object.entries(fm)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n');
     for (const p of SECRET_PATTERNS) {
-      if (p.re.test(body)) {
+      if (p.re.test(body) || p.re.test(fmScan)) {
         issues.push({ check: 'secret', file: rel, detail: `possible secret (${p.id})` });
         break;
       }

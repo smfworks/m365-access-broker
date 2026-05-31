@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { config } from './config.js';
 import { Broker } from './broker.js';
 import { ApprovalStore } from './approvals.js';
@@ -46,7 +46,12 @@ function readBody(req) {
 }
 
 function headerEquals(actual, expected) {
-  return typeof actual === 'string' && actual.length === expected.length && actual === expected;
+  if (typeof actual !== 'string' || typeof expected !== 'string') return false;
+  // Compare fixed-length digests so the check is constant-time and does not leak
+  // the expected key's length or a matching-prefix timing oracle.
+  const a = createHash('sha256').update(actual).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
 }
 
 const server = createServer(async (req, res) => {
@@ -62,7 +67,8 @@ const server = createServer(async (req, res) => {
       }
       const body = await readBody(req);
       if (!body.tool) return send(res, 400, { ok: false, error: 'missing tool' });
-      const approvalId = approvals.create(body.tool);
+      // Bind the approval to the exact tool AND args the approver saw.
+      const approvalId = approvals.create(body.tool, body.args || {});
       return send(res, 200, { ok: true, approvalId, expiresInMs: approvals.ttlMs });
     }
 
@@ -83,7 +89,8 @@ const server = createServer(async (req, res) => {
       // it can only present an approvalId minted via /approve by the host UI.
       const ctx = { user: 'local-agent' };
       if (body.approvalId) {
-        ctx.approvalGranted = approvals.consume(body.approvalId, body.tool);
+        // The token only validates for the same tool + args it was minted for.
+        ctx.approvalGranted = approvals.consume(body.approvalId, body.tool, body.args || {});
       }
 
       const result = await broker.execute(body.tool, body.args || {}, ctx);

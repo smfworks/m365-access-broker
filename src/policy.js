@@ -2,6 +2,7 @@ import {
   TOOL_CATALOG,
   DEFAULT_ALLOWLIST,
   requiresApprovalByClass,
+  isKnownSensitivity,
 } from './catalog.js';
 
 // The policy engine decides whether a tool call may proceed and whether it
@@ -41,6 +42,30 @@ export class PolicyEngine {
     }
 
     const needsApproval = requiresApprovalByClass(spec.sensitivity);
+
+    // Fail closed on a catalog entry whose sensitivity is not a recognized
+    // class (e.g. a typo) — it is treated as approval-gated above; surface why.
+    if (!isKnownSensitivity(spec.sensitivity)) {
+      reasons.push(`unknown_sensitivity:${spec.sensitivity}`);
+    }
+
+    // Optional least-privilege enforcement: when the caller declares the scopes
+    // actually granted to the agent's token, every scope the tool needs must be
+    // present or the call is denied. Absent ctx.grantedScopes, the local trusted
+    // agent is assumed to hold the catalog scopes (existing behavior).
+    if (Array.isArray(ctx.grantedScopes)) {
+      const granted = new Set(ctx.grantedScopes);
+      const missing = (spec.scopes || []).filter((s) => !granted.has(s));
+      if (missing.length) {
+        return {
+          allowed: false,
+          requiresApproval: needsApproval,
+          scopes: spec.scopes,
+          sensitivity: spec.sensitivity,
+          reasons: [...reasons, `missing_scopes:${missing.join(',')}`],
+        };
+      }
+    }
 
     // Approval-gated tools must carry a granted approval token.
     let approvalSatisfied = true;

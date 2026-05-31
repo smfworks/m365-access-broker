@@ -79,6 +79,18 @@ class DryRunGraphClient {
   }
 }
 
+// Validate and percent-encode a caller-supplied id used as a single Graph URL
+// path segment. Rejects delimiters that could alter the request target.
+function seg(id, kind = 'id') {
+  if (typeof id !== 'string' || id.trim() === '') {
+    throw new Error(`invalid_${kind}`);
+  }
+  if (/[\/?#]/.test(id)) {
+    throw new Error(`invalid_${kind}`);
+  }
+  return encodeURIComponent(id);
+}
+
 // Live client skeleton. Token acquisition is delegated to MSAL, which is an
 // optional dependency loaded only when real credentials are configured.
 class LiveGraphClient {
@@ -157,7 +169,7 @@ class LiveGraphClient {
   }
 
   async getMail({ id }) {
-    return this._fetch(`/me/messages/${id}`);
+    return this._fetch(`/me/messages/${seg(id)}`);
   }
 
   async searchFiles({ query = '' } = {}) {
@@ -168,7 +180,7 @@ class LiveGraphClient {
   async getFileText({ id }) {
     // The /content endpoint returns raw file bytes, not JSON — read as text.
     const token = await this._getToken();
-    const res = await fetch(`${this.base}/me/drive/items/${id}/content`, {
+    const res = await fetch(`${this.base}/me/drive/items/${seg(id)}/content`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -191,12 +203,12 @@ class LiveGraphClient {
   }
 
   async sendDraft({ draftId }) {
-    await this._fetch(`/me/messages/${draftId}/send`, { method: 'POST' });
+    await this._fetch(`/me/messages/${seg(draftId, 'draftId')}/send`, { method: 'POST' });
     return { draftId, status: 'sent', sent: true };
   }
 
   async shareFile({ id, recipients }) {
-    const data = await this._fetch(`/me/drive/items/${id}/invite`, {
+    const data = await this._fetch(`/me/drive/items/${seg(id)}/invite`, {
       method: 'POST',
       body: JSON.stringify({
         recipients: (recipients || []).map((address) => ({ email: address })),
@@ -209,7 +221,7 @@ class LiveGraphClient {
   }
 
   async deleteFile({ id }) {
-    await this._fetch(`/me/drive/items/${id}`, { method: 'DELETE' });
+    await this._fetch(`/me/drive/items/${seg(id)}`, { method: 'DELETE' });
     return { id, status: 'deleted' };
   }
 }

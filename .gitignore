@@ -4,3 +4,9 @@ audit.log
 *.log
 .tokens/
 .DS_Store
+
+# clawreview local review state
+.clawreview/
+
+# clawpatch local tooling state
+.clawpatch/

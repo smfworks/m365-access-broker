@@ -50,5 +50,8 @@ export const config = {
 };
 
 export function hasRealCredentials() {
-  return Boolean(config.ms.tenantId && config.ms.clientId);
+  // Require the full client-credentials set the live Graph client needs, so we
+  // never select the live path with an incomplete config that only fails later
+  // at token acquisition.
+  return Boolean(config.ms.tenantId && config.ms.clientId && config.ms.clientSecret);
 }

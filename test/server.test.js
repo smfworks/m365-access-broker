@@ -59,7 +59,7 @@ test('agent cannot mint approvals (needs approver key)', async () => {
 });
 
 test('approver mints token, agent executes outbound tool with it', async () => {
-  const mint = await post('/approve', { tool: 'send_approved_draft' }, { 'x-approver-key': 'approver-test-key' });
+  const mint = await post('/approve', { tool: 'send_approved_draft', args: { draftId: 'd1' } }, { 'x-approver-key': 'approver-test-key' });
   assert.equal(mint.status, 200);
   const { approvalId } = await mint.json();
   assert.ok(approvalId);
@@ -71,6 +71,20 @@ test('approver mints token, agent executes outbound tool with it', async () => {
   );
   assert.equal(exec.status, 200);
   assert.equal((await exec.json()).ok, true);
+});
+
+test('approval is bound to args: same tool, different args is denied', async () => {
+  const mint = await post('/approve', { tool: 'send_approved_draft', args: { draftId: 'd1' } }, { 'x-approver-key': 'approver-test-key' });
+  const { approvalId } = await mint.json();
+
+  // Approval minted for draft d1 must not authorize sending draft d2.
+  const exec = await post(
+    '/execute',
+    { tool: 'send_approved_draft', args: { draftId: 'd2' }, approvalId },
+    { 'x-broker-key': 'agent-test-key' }
+  );
+  assert.equal(exec.status, 403);
+  assert.equal((await exec.json()).ok, false);
 });
 
 test('approval token is single-use and tool-scoped', async () => {
