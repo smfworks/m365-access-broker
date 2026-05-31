@@ -15,8 +15,17 @@ approval gates, and audit logging**.
 > Operating principle: **Let OpenClaw prepare, summarize, draft, and remember.
 > Require approval before it sends, shares, deletes, or commits.**
 
-This MVP addresses the top issues for an OpenClaw-style agent: authority boundaries (#1),
-identity & attribution (#4), and the customer-safe / enterprise-trust framing (#5).
+## Key capabilities
+
+- 🔐 **Auth & scopes** — single governed choke point; every Graph call carries explicit, least-privilege scopes.
+- 🧰 **Tool allowlist + risk classes** — narrow, explicit tools (read / write / outbound / destructive). No generic Graph passthrough.
+- ✅ **Approval gate** — outbound and destructive actions require a single-use, tool-scoped token the agent **cannot mint itself**.
+- 🧱 **Injection firewall** — retrieved M365/web content is treated as **evidence, never instruction**; embedded prompt-injection and exfiltration attempts are scanned, scored, and surfaced — never executed. See [Injection firewall](#injection-firewall).
+- 🧠 **Memory hygiene linter** — flags missing provenance, hoarding, staleness, secrets, contradictions, and unreviewed external facts in the agent's persistent memory. See [Memory hygiene linter](#memory-hygiene-linter).
+- 🧾 **Redacted audit log** — every operation attributable and logged; secrets never persisted.
+
+This MVP targets the top risks of an OpenClaw-style agent: authority boundaries, prompt-injection
+defense, memory hygiene, identity & attribution, and a customer-safe / enterprise-trust posture.
 
 ## Why a broker
 
@@ -27,7 +36,8 @@ unmanaged backdoor into M365. The broker makes the agent **enterprise-defensible
 - Narrow, explicit tools (no generic Graph passthrough).
 - Write-narrow-by-default; **outbound and destructive actions require approval**.
 - Every operation is attributable and logged (secrets redacted).
-- Retrieved content stays data, never instruction.
+- Retrieved content stays data, never instruction (**injection firewall**).
+- Persistent memory is kept honest (**memory hygiene linter**).
 
 ## Architecture
 
@@ -175,7 +185,7 @@ MVP. Read/draft/approval/audit paths implemented and tested in dry-run. Live Gra
 wired but unverified against a real tenant. Roadmap: PKCE interactive auth, per-tool rate
 limits.
 
-## Injection firewall (Issue #2)
+## Injection firewall
 
 Retrieved Microsoft 365 / web content is **evidence, never instruction**. `src/firewall.js`
 scans untrusted text for instruction-override, coercion, exfiltration, and obfuscation
@@ -198,7 +208,7 @@ never executed**:
 fails on any false negative or false positive. `shouldBlockAutoAction(verdict)` lets callers
 refuse autonomous writes derived from high-risk content.
 
-## Memory hygiene linter (Issue #3)
+## Memory hygiene linter
 
 Persistent memory is OpenClaw's superpower and its biggest liability. `src/memoryLinter.js`
 (forked in spirit from the SecondBrain vault linter) enforces the broker's promotion rules on
