@@ -1,9 +1,11 @@
 import { config } from './config.js';
+import { randomUUID } from 'node:crypto';
 import { PolicyEngine } from './policy.js';
 import { AuditLogger } from './audit.js';
 import { createGraphClient } from './graphClient.js';
 import { TOOL_HANDLERS } from './tools.js';
 import { TOOL_CATALOG } from './catalog.js';
+import { assertCatalogCoherence } from './scopes.js';
 import { scanContent, sanitize, shouldBlockAutoAction } from './firewall.js';
 
 // Collect raw string values from a handler result so the injection firewall sees
@@ -24,6 +26,11 @@ export class Broker {
     this.policy = policy || new PolicyEngine();
     this.audit = audit || new AuditLogger({ logPath: config.auditLog });
     this.graph = graph || createGraphClient();
+    // Structural coherence: every catalog tool has a handler and vice versa, and
+    // every allowlisted name exists in the catalog. Prevents an undeclared
+    // (therefore unscoped, unaudited) handler or a declared-but-missing tool from
+    // shipping silently.
+    assertCatalogCoherence(TOOL_CATALOG, TOOL_HANDLERS);
   }
 
   listTools() {
@@ -31,12 +38,15 @@ export class Broker {
   }
 
   async execute(toolName, args = {}, ctx = {}) {
+    // One correlation id for everything this request emits to the audit trail.
+    const requestId = ctx.requestId || randomUUID();
     const decision = this.policy.evaluate(toolName, args, ctx);
     const user = ctx.user || 'local-agent';
 
     if (!decision.allowed) {
       const outcome = decision.requiresApproval ? 'denied_needs_approval' : 'denied';
       this.audit.record({
+        requestId,
         tool: toolName,
         user,
         scopes: decision.scopes,
@@ -50,6 +60,7 @@ export class Broker {
       return {
         ok: false,
         outcome,
+        requestId,
         requiresApproval: decision.requiresApproval,
         reasons: decision.reasons,
       };
@@ -58,6 +69,7 @@ export class Broker {
     const handler = TOOL_HANDLERS[toolName];
     if (!handler) {
       this.audit.record({
+        requestId,
         tool: toolName,
         user,
         scopes: decision.scopes,
@@ -66,7 +78,7 @@ export class Broker {
         reasons: ['no_handler'],
         args,
       });
-      return { ok: false, outcome: 'error', reasons: ['no_handler'] };
+      return { ok: false, outcome: 'error', requestId, reasons: ['no_handler'] };
     }
 
     try {
@@ -90,6 +102,7 @@ export class Broker {
       }
 
       this.audit.record({
+        requestId,
         tool: toolName,
         user,
         resourceType,
@@ -116,16 +129,18 @@ export class Broker {
         return {
           ok: true,
           outcome: 'success',
+          requestId,
           blocked: true,
           result: { quarantined: true, risk: verdict.risk, content: wrapped.wrapped },
           security: { ...security, blocked: true, action: 'quarantined' },
         };
       }
       return security
-        ? { ok: true, outcome: 'success', result, security }
-        : { ok: true, outcome: 'success', result };
+        ? { ok: true, outcome: 'success', requestId, result, security }
+        : { ok: true, outcome: 'success', requestId, result };
     } catch (err) {
       this.audit.record({
+        requestId,
         tool: toolName,
         user,
         scopes: decision.scopes,
@@ -134,7 +149,7 @@ export class Broker {
         reasons: [err.code || 'handler_error', err.message],
         args,
       });
-      return { ok: false, outcome: 'error', reasons: [err.code || 'handler_error', err.message] };
+      return { ok: false, outcome: 'error', requestId, reasons: [err.code || 'handler_error', err.message] };
     }
   }
 }

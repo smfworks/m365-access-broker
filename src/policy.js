@@ -4,6 +4,7 @@ import {
   requiresApprovalByClass,
   isKnownSensitivity,
 } from './catalog.js';
+import { validateCatalogScopes, requiredScopeSet } from './scopes.js';
 
 // The policy engine decides whether a tool call may proceed and whether it
 // needs human approval. It never executes anything itself.
@@ -11,6 +12,16 @@ export class PolicyEngine {
   constructor({ allowlist = DEFAULT_ALLOWLIST, catalog = TOOL_CATALOG } = {}) {
     this.allowlist = new Set(allowlist);
     this.catalog = catalog;
+    // Fail fast: a catalog declaring an unknown/typo'd Graph scope is a silent
+    // privilege gap, so reject it at construction (broker startup) rather than
+    // at first call.
+    validateCatalogScopes(this.catalog);
+  }
+
+  // The least-privilege Graph scope set the allowlisted tools actually need.
+  // This is the exact permission set the app registration should be granted.
+  requiredScopes() {
+    return requiredScopeSet([...this.allowlist], this.catalog);
   }
 
   /**

@@ -1,7 +1,29 @@
-import { appendFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { randomUUID, createHash } from 'node:crypto';
 
 const MAX_STRING = 240;
+
+// Genesis hash: the fixed anchor every audit chain starts from. The first
+// record's prevHash is this value.
+export const AUDIT_GENESIS_HASH = '0'.repeat(64);
+
+// Deterministic, key-order-independent serialization so a record always hashes
+// to the same value regardless of property insertion order.
+function stableStringify(value) {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+  const keys = Object.keys(value).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
+}
+
+// Hash of a record's content (everything except the hash field) chained to the
+// previous record's hash. Any edit, reorder, or deletion changes a downstream
+// hash and is therefore detectable.
+function chainHash(base, prevHash) {
+  return createHash('sha256')
+    .update(stableStringify(base) + '\u0000' + prevHash)
+    .digest('hex');
+}
 
 // Normalized substrings that mark a key as secret-bearing. Matched against a
 // lowercased, separator-stripped form of the key so snake_case, camelCase,
@@ -70,15 +92,51 @@ export function redact(value, depth = 0) {
 }
 
 export class AuditLogger {
-  constructor({ logPath, sink } = {}) {
+  constructor({ logPath, sink, genesisHash = AUDIT_GENESIS_HASH } = {}) {
     this.logPath = logPath;
+    this.genesisHash = genesisHash;
     // sink lets tests capture entries without touching disk.
     this.sink = sink || ((line) => appendFileSync(this.logPath, line + '\n'));
+    // Chain state. Recover the tail from an existing log so the chain continues
+    // unbroken across process restarts; otherwise start at genesis.
+    this.seq = 0;
+    this.prevHash = genesisHash;
+    if (!sink) this._recoverChain();
+  }
+
+  // Best-effort recovery: read the last parseable record from the existing log
+  // and resume seq/prevHash from it. A corrupt or absent tail simply starts a
+  // fresh chain at genesis rather than throwing — a logger must never refuse to
+  // log because an old line is unreadable.
+  _recoverChain() {
+    try {
+      if (!this.logPath || !existsSync(this.logPath)) return;
+      const text = readFileSync(this.logPath, 'utf8');
+      const lines = text.split('\n').filter((l) => l.trim() !== '');
+      for (let i = lines.length - 1; i >= 0; i--) {
+        try {
+          const rec = JSON.parse(lines[i]);
+          if (typeof rec.seq === 'number' && typeof rec.hash === 'string') {
+            this.seq = rec.seq;
+            this.prevHash = rec.hash;
+            return;
+          }
+        } catch { /* skip unparseable line */ }
+      }
+    } catch { /* unreadable file — start fresh at genesis */ }
   }
 
   record(entry) {
-    const record = {
+    // Content of the record (hashed). `seq`, `prevHash`, and `hash` make it a
+    // tamper-evident link in an append-only chain.
+    const base = {
+      v: 1,
+      seq: this.seq + 1,
+      prevHash: this.prevHash,
       id: randomUUID(),
+      // requestId correlates every record emitted while handling one broker
+      // request (decision, execution, result) under a single id.
+      requestId: entry.requestId || null,
       timestamp: new Date().toISOString(),
       tool: entry.tool,
       user: entry.user || 'unknown',
@@ -97,6 +155,16 @@ export class AuditLogger {
         ? redact(entry.resultSummary)
         : entry.resultSummary || null,
     };
+    const hash = chainHash(base, this.prevHash);
+    const record = { ...base, hash };
+
+    // Advance the chain as soon as the link is formed, before attempting the
+    // write: the record logically exists, and the fallback path below still
+    // persists it, so the next record must chain onto this hash regardless of a
+    // primary-sink failure.
+    this.seq = base.seq;
+    this.prevHash = hash;
+
     const line = JSON.stringify(record);
     try {
       this.sink(line);
@@ -118,4 +186,44 @@ export class AuditLogger {
     }
     return record;
   }
+}
+
+// Walk an ordered list of audit records (parsed objects) and confirm the hash
+// chain is intact: monotonic seq, prevHash linkage, and a recomputed content
+// hash that matches. Returns the first break found. `records` may also be a raw
+// newline-delimited log string.
+export function verifyAuditChain(records, { genesisHash = AUDIT_GENESIS_HASH } = {}) {
+  let parsed = records;
+  if (typeof records === 'string') {
+    parsed = records
+      .split('\n')
+      .filter((l) => l.trim() !== '')
+      .map((l) => JSON.parse(l));
+  }
+  let prevHash = genesisHash;
+  let expectedSeq = 1;
+  for (let i = 0; i < parsed.length; i++) {
+    const rec = parsed[i];
+    if (rec.seq !== expectedSeq) {
+      return { ok: false, index: i, seq: rec.seq, reason: `seq_gap:expected_${expectedSeq}_got_${rec.seq}`, count: parsed.length };
+    }
+    if (rec.prevHash !== prevHash) {
+      return { ok: false, index: i, seq: rec.seq, reason: 'prevhash_mismatch', count: parsed.length };
+    }
+    const { hash, persisted, persistError, ...base } = rec;
+    const recomputed = chainHash(base, rec.prevHash);
+    if (recomputed !== hash) {
+      return { ok: false, index: i, seq: rec.seq, reason: 'hash_mismatch', count: parsed.length };
+    }
+    prevHash = hash;
+    expectedSeq++;
+  }
+  return { ok: true, count: parsed.length, head: prevHash };
+}
+
+// Convenience wrapper: verify a chain stored at a file path. A missing file is
+// a valid empty chain.
+export function verifyAuditFile(path) {
+  if (!existsSync(path)) return { ok: true, count: 0, head: AUDIT_GENESIS_HASH };
+  return verifyAuditChain(readFileSync(path, 'utf8'));
 }

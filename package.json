@@ -7,7 +7,8 @@
   "scripts": {
     "start": "node src/server.js",
     "test": "node --test",
-    "lint:memory": "node bin/lint-memory.js"
+    "lint:memory": "node bin/lint-memory.js",
+    "verify:audit": "node bin/verify-audit.js"
   },
   "keywords": [
     "openclaw",

@@ -121,6 +121,13 @@ class LiveGraphClient {
       },
     });
     const result = await app.acquireTokenByClientCredential({
+      // Client-credentials (app-only) flow must request `.default`, which returns
+      // exactly the application permissions an admin has consented to on the app
+      // registration — it cannot request a narrower per-call subset. Least
+      // privilege is therefore enforced at the registration: grant only the
+      // scopes in PolicyEngine.requiredScopes() (logged at startup, served at
+      // /health), nothing more. Delegated auth (on the roadmap) supports
+      // per-call incremental scopes.
       scopes: ['https://graph.microsoft.com/.default'],
     });
     // result.expiresOn is a Date in MSAL; fall back to ~55 min if absent.

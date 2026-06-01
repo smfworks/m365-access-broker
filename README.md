@@ -44,17 +44,18 @@ unmanaged backdoor into M365. The broker makes the agent **enterprise-defensible
 ```text
 OpenClaw agent ──HTTP──> Broker ──MSAL+Graph──> Microsoft 365
                           │
-                          ├── PolicyEngine  (scopes, allowlist, approval gates)
-                          ├── AuditLogger   (redacted JSON-lines log)
+                          ├── PolicyEngine  (scopes contract, allowlist, approval gates)
+                          ├── AuditLogger   (redacted, hash-chained JSON-lines log)
                           └── GraphClient   (dry-run mock | live MSAL)
 ```
 
 | Module | Responsibility |
 |---|---|
 | `src/catalog.js` | Tool catalog: Graph scopes + risk class per tool. |
+| `src/scopes.js`  | Scopes-as-contract: registry validation, least-privilege set, catalog↔handler coherence. |
 | `src/policy.js`  | Decides allow / deny / needs-approval. Executes nothing. |
 | `src/approvals.js` | Single-use, tool-scoped approval tokens minted by the host UI. |
-| `src/audit.js`   | Structured, redacted, truncated audit log. |
+| `src/audit.js`   | Structured, redacted, truncated, **hash-chained** audit log. |
 | `src/graphClient.js` | Dry-run mock (default) or live MSAL + Graph. |
 | `src/tools.js`   | Narrow tool handlers. |
 | `src/firewall.js` | Injection firewall: scans retrieved content, scores risk, wraps as data. |
@@ -80,7 +81,7 @@ npm install        # no dependencies to fetch in dry-run; sets up scripts
 No credentials required — the broker defaults to **dry-run** mode with deterministic mock data.
 
 ```bash
-npm test          # 43 unit + integration tests (node:test, zero deps)
+npm test          # full test suite (node:test, zero deps)
 npm start         # serves http://127.0.0.1:8787
 ```
 
@@ -142,14 +143,24 @@ rejected preflight).
 
 Anything not on the allowlist (e.g. `run_graph_query`) is rejected outright.
 
+The catalog is enforced as a **contract** (`src/scopes.js`): at startup the broker
+rejects any tool that declares an unknown Graph scope, and asserts a 1:1 mapping between
+catalog entries and tool handlers — an undeclared (therefore unscoped, unaudited) handler
+or a declared-but-missing tool fails fast instead of shipping silently. The exact
+least-privilege scope set the allowlist needs is computed (`PolicyEngine.requiredScopes()`),
+logged at startup, and served at `GET /health`.
+
 ## Going live
 
 1. Register a single-tenant Entra app (delegated auth, minimal scopes).
 2. `cp .env.example .env`, set `BROKER_DRY_RUN=false`, `MS_TENANT_ID`, `MS_CLIENT_ID`.
 3. `npm install @azure/msal-node` (loaded lazily; not needed for dry-run).
 
-Start with read-only scopes (`User.Read`, `Calendars.Read`, `Mail.Read`, `Files.Read`);
-add write scopes only after the read paths work.
+Grant the app exactly the scopes the broker reports as **least-privilege** at startup (and
+at `GET /health`) — nothing more. The app-only token request uses `.default`, which returns
+precisely the permissions consented on the registration, so least privilege is enforced at
+the registration, not per call. Start with read-only scopes (`User.Read`, `Calendars.Read`,
+`Mail.Read`, `Files.Read`) and add write scopes only after the read paths work.
 
 ## Configuration
 
@@ -178,6 +189,19 @@ JSON-lines at `audit.log`. Each entry records timestamp, tool, user, resource re
 sensitivity, whether approval was required/granted, outcome, and a result summary —
 with secrets redacted and long strings truncated. Raw tokens and full message bodies are
 never persisted.
+
+The log is a **tamper-evident hash chain**: every entry carries a monotonic `seq`, the
+prior entry's `hash` (`prevHash`), and its own content `hash`. Editing, reordering, or
+deleting any entry breaks a downstream hash and is detectable. The chain resumes unbroken
+across restarts (recovered from the log tail), and a `requestId` correlates all entries
+emitted while handling one broker request. Verify integrity any time:
+
+```bash
+npm run verify:audit            # verifies $BROKER_AUDIT_LOG (default audit.log)
+node bin/verify-audit.js path/to/audit.log --json
+```
+
+Exit `0` = intact, `2` = a break was detected (reports the offending `seq` and reason).
 
 ## Status
 
@@ -233,20 +257,21 @@ Exit code `2` when issues exist, so it can gate memory promotion or CI.
 ## Testing
 
 ```bash
-npm test                       # full suite (43 tests)
+npm test                       # full suite (79 tests)
 node --test test/policy.test.js # a single file
 ```
 
 Tests use Node's built-in runner — no Jest/Mocha, no install step. The injection-firewall
 red-team corpus (`data/injection-corpus.json`) runs as part of the suite and fails on any
-false positive or false negative.
+false positive or false negative. The scopes contract (`test/scopes.test.js`) and the
+audit-chain integrity (`test/audit-chain.test.js`) are covered as regression suites.
 
 ## Project layout
 
 ```text
-src/        broker, policy, approvals, audit, graphClient, tools, catalog, firewall, memoryLinter, server
+src/        broker, policy, approvals, audit, scopes, graphClient, tools, catalog, firewall, memoryLinter, server
 test/       unit + integration tests and fixtures
-bin/        lint-memory.js CLI entry point
+bin/        lint-memory.js, verify-audit.js CLI entry points
 data/       injection-corpus.json red-team eval set
 ```
 

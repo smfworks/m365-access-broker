@@ -155,7 +155,7 @@ test('fnd_fw_02: forged tool-call inside a string value is detected', async () =
 
 // fnd_pol_01 — unknown sensitivity fails closed
 test('fnd_pol_01: a typo sensitivity is treated as approval-gated', () => {
-  const catalog = { weird_tool: { scopes: ['X'], sensitivity: 'outbond' } };
+  const catalog = { weird_tool: { scopes: ['Mail.Send'], sensitivity: 'outbond' } };
   const policy = new PolicyEngine({ allowlist: ['weird_tool'], catalog });
   const d = policy.evaluate('weird_tool', {});
   assert.equal(d.requiresApproval, true);

@@ -57,7 +57,12 @@ function headerEquals(actual, expected) {
 const server = createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
-      return send(res, 200, { ok: true, mode: broker.graph.mode, dryRun: config.dryRun });
+      return send(res, 200, {
+        ok: true,
+        mode: broker.graph.mode,
+        dryRun: config.dryRun,
+        requiredScopes: broker.policy.requiredScopes(),
+      });
     }
 
     // Host-UI-only: mint an approval token for a specific tool.
@@ -115,6 +120,9 @@ export function start(port = config.port) {
         `OpenClaw M365 Broker listening on http://127.0.0.1:${addr.port} ` +
           `(mode=${broker.graph.mode}, dryRun=${config.dryRun})`
       );
+      // Publish the least-privilege scope contract so the operator can grant the
+      // app registration exactly these permissions — no more.
+      console.log(`  least-privilege scopes: ${broker.policy.requiredScopes().join(', ')}`);
       if (ephemeral) {
         console.log('Ephemeral keys generated (set BROKER_KEY / BROKER_APPROVER_KEY to persist):');
         console.log(`  x-broker-key:   ${brokerKey}`);
