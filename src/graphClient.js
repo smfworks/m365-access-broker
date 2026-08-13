@@ -85,7 +85,9 @@ function seg(id, kind = 'id') {
   if (typeof id !== 'string' || id.trim() === '') {
     throw new Error(`invalid_${kind}`);
   }
-  if (/[\/?#]/.test(id)) {
+  // Reject path delimiters, null bytes (which can truncate URL paths in some
+  // servers), and control characters that could alter the request target.
+  if (/[/?#]/.test(id) || /\u0000/.test(id) || /[\x00-\x1f]/.test(id)) {
     throw new Error(`invalid_${kind}`);
   }
   return encodeURIComponent(id);
@@ -169,8 +171,13 @@ class LiveGraphClient {
   }
 
   async searchMail({ query = '', limit = 5 } = {}) {
+    // Sanitize the search query for OData $search: escape double quotes and
+    // backslashes so the query cannot break out of the $search="..." syntax
+    // and inject OData parameters.
+    const safeQuery = String(query).replace(/["\\]/g, '\\$&').slice(0, 1000);
+    const safeLimit = Math.min(Math.max(1, Number(limit) || 5), 50);
     const data = await this._fetch(
-      `/me/messages?$search="${encodeURIComponent(query)}"&$top=${limit}`
+      `/me/messages?$search="${encodeURIComponent(safeQuery)}"&$top=${safeLimit}`
     );
     return data.value || [];
   }
@@ -180,7 +187,10 @@ class LiveGraphClient {
   }
 
   async searchFiles({ query = '' } = {}) {
-    const data = await this._fetch(`/me/drive/root/search(q='${encodeURIComponent(query)}')`);
+    // Sanitize the search query: escape single quotes (which delimit the
+    // q='...' parameter) and limit length.
+    const safeQuery = String(query).replace(/'/g, "''").slice(0, 1000);
+    const data = await this._fetch(`/me/drive/root/search(q='${encodeURIComponent(safeQuery)}')`);
     return data.value || [];
   }
 

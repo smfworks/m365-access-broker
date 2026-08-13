@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, lstatSync, statSync, renameSync } from 'node:fs';
 import { randomUUID, createHash } from 'node:crypto';
 
 const MAX_STRING = 240;
@@ -9,9 +9,13 @@ export const AUDIT_GENESIS_HASH = '0'.repeat(64);
 
 // Deterministic, key-order-independent serialization so a record always hashes
 // to the same value regardless of property insertion order.
+// Uses Object.keys() which only returns own enumerable properties, so
+// inherited properties like __proto__ and constructor are not included.
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+  // Object.keys returns only own-enumerable properties, excluding __proto__,
+  // constructor, and other inherited properties — no prototype pollution.
   const keys = Object.keys(value).sort();
   return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
 }
@@ -82,6 +86,12 @@ export function redact(value, depth = 0) {
 
   const out = {};
   for (const [k, v] of Object.entries(value)) {
+    // Defense-in-depth: skip keys that could hijack the prototype chain.
+    // Object.entries already only returns own enumerable properties (not
+    // inherited), but an attacker-supplied JSON key named __proto__ or
+    // constructor is still assigned via out[k] = ... and could be problematic
+    // for downstream consumers that use for...in or .hasOwnProperty.
+    if (k === '__proto__' || k === 'constructor' || k === 'prototype') continue;
     if (isSecretKey(k)) {
       out[k] = '[REDACTED]';
     } else {
@@ -92,16 +102,69 @@ export function redact(value, depth = 0) {
 }
 
 export class AuditLogger {
-  constructor({ logPath, sink, genesisHash = AUDIT_GENESIS_HASH } = {}) {
+  constructor({ logPath, sink, genesisHash = AUDIT_GENESIS_HASH, maxLogBytes = 100 * 1024 * 1024 } = {}) {
     this.logPath = logPath;
     this.genesisHash = genesisHash;
+    this.maxLogBytes = maxLogBytes;
+    // Check for symlink at construction time — refuse to start if the log
+    // path is a symlink, since an attacker could redirect/lose audit evidence.
+    this._assertNotSymlink(this.logPath);
     // sink lets tests capture entries without touching disk.
-    this.sink = sink || ((line) => appendFileSync(this.logPath, line + '\n'));
+    this.sink = sink || ((line) => this._appendToFile(line));
     // Chain state. Recover the tail from an existing log so the chain continues
     // unbroken across process restarts; otherwise start at genesis.
     this.seq = 0;
     this.prevHash = genesisHash;
     if (!sink) this._recoverChain();
+  }
+
+  // Symlink guard: refuse to write if the log path is a symlink. An attacker
+  // who can create a symlink at the audit log path could redirect entries to
+  // /dev/null (losing audit evidence) or overwrite an arbitrary file.
+  // Throws on detection; returns silently if the file doesn't exist yet.
+  _assertNotSymlink(path) {
+    if (!path) return;
+    try {
+      const st = lstatSync(path);
+      if (st.isSymbolicLink()) {
+        throw new Error(`audit log path is a symlink: ${path}`);
+      }
+    } catch (err) {
+      if (err.message && err.message.includes('symlink')) throw err;
+      // File doesn't exist yet — fine. Other errors (permission) are ignored
+      // at this stage; they'll surface on the actual write.
+    }
+  }
+
+  // Append with symlink protection and size guard.
+  _appendToFile(line) {
+    if (!this.logPath) throw new Error('no audit log path configured');
+    this._assertNotSymlink(this.logPath);
+    // Enforce a maximum log size to prevent unbounded growth (disk exhaustion).
+    // When exceeded, rotate: move the current log to .old and start fresh.
+    try {
+      const st = statSync(this.logPath);
+      if (st.size + line.length + 1 > this.maxLogBytes) {
+        this._rotateLog();
+      }
+    } catch {
+      // File might not exist yet — fine, just proceed.
+    }
+    appendFileSync(this.logPath, line + '\n');
+  }
+
+  // Rotate the audit log by renaming the current file to <path>.old.
+  // The old chain is preserved; the new file starts a fresh chain at genesis.
+  _rotateLog() {
+    try {
+      const oldPath = this.logPath + '.old';
+      // Don't overwrite a previous rotation if it's a symlink.
+      this._assertNotSymlink(oldPath);
+      try { renameSync(this.logPath, oldPath); } catch { /* ignore */ }
+      // Reset the chain to genesis for the new log.
+      this.seq = 0;
+      this.prevHash = this.genesisHash;
+    } catch { /* best-effort rotation */ }
   }
 
   // Best-effort recovery: read the last parseable record from the existing log
@@ -111,6 +174,9 @@ export class AuditLogger {
   _recoverChain() {
     try {
       if (!this.logPath || !existsSync(this.logPath)) return;
+      // Refuse to recover from a symlink — an attacker could point it at
+      // /dev/null or a crafted file to reset the chain to a known state.
+      this._assertNotSymlink(this.logPath);
       const text = readFileSync(this.logPath, 'utf8');
       const lines = text.split('\n').filter((l) => l.trim() !== '');
       for (let i = lines.length - 1; i >= 0; i--) {
@@ -180,6 +246,7 @@ export class AuditLogger {
       } catch { /* ignore */ }
       if (this.logPath) {
         try {
+          this._assertNotSymlink(this.logPath + '.fallback');
           appendFileSync(this.logPath + '.fallback', line + '\n');
         } catch { /* ignore */ }
       }

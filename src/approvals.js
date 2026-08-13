@@ -1,10 +1,12 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 // Deterministic, key-order-independent serialization so the same logical args
 // always produce the same digest.
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
+  // Object.keys returns only own-enumerable properties, excluding inherited
+  // prototype properties — no prototype pollution vector.
   const keys = Object.keys(value).sort();
   return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(value[k])).join(',') + '}';
 }
@@ -58,7 +60,12 @@ export class ApprovalStore {
     if (!rec) return false;
     if (rec.expiresAt < Date.now()) return false;
     if (rec.tool !== tool) return false;
-    if (rec.digest !== requestDigest(tool, args)) return false;
+    // Timing-safe comparison of the digest so an attacker cannot use a timing
+    // oracle to recover the expected digest byte by byte. Both digests are
+    // fixed-length 64-char hex strings from SHA-256.
+    const computed = requestDigest(tool, args);
+    if (rec.digest.length !== computed.length) return false;
+    if (!timingSafeEqual(Buffer.from(rec.digest), Buffer.from(computed))) return false;
     return true;
   }
 

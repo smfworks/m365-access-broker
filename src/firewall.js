@@ -36,6 +36,30 @@ export const RULES = Object.freeze([
 ]);
 
 const ZERO_WIDTH = /[\u200B-\u200D\uFEFF\u2060]/g;
+// Null bytes can split trigger words to bypass bounded [^.​\n] patterns:
+// "ignore\u0000 previous instructions" would not match without this.
+const NULL_BYTES = /\u0000/g;
+// Homoglyphs: confusable Unicode that looks like ASCII letters/digits.
+// Normalize Cyrillic, Greek, and fullwidth look-alikes to ASCII equivalents
+// so injection patterns cannot evade detection via visual substitution.
+const HOMOGLYPHS = [
+  [/\u0430/g, 'a'], // Cyrillic а
+  [/\u0435/g, 'e'], // Cyrillic е
+  [/\u043E/g, 'o'], // Cyrillic о
+  [/\u0440/g, 'p'], // Cyrillic р
+  [/\u0441/g, 'c'], // Cyrillic с
+  [/\u0443/g, 'y'], // Cyrillic у
+  [/\u0445/g, 'x'], // Cyrillic х
+  [/\u0410/g, 'A'], // Cyrillic А
+  [/\u0415/g, 'E'], // Cyrillic Е
+  [/\u041E/g, 'O'], // Cyrillic О
+  [/\u0420/g, 'P'], // Cyrillic Р
+  [/\u0421/g, 'C'], // Cyrillic С
+  [/\uFF21/g, 'A'], // Fullwidth A
+  [/\uFF41/g, 'a'], // Fullwidth a
+  [/\uFF2F/g, 'O'], // Fullwidth O
+  [/\uFF4F/g, 'o'], // Fullwidth o
+];
 
 function riskFromScore(score) {
   if (score >= SEVERITY.HIGH) return 'high';
@@ -59,9 +83,20 @@ export function scanContent(text) {
   if (typeof text !== 'string' || text.length === 0) {
     return { risk: 'none', score: 0, findings };
   }
+  // Build evasion-resistant variants:
+  // 1. Original (so zero-width/null/base64/HTML-comment markers are visible).
+  // 2. Zero-width stripped (hidden separators can't downgrade risk).
+  // 3. Null-byte stripped (split words rejoined).
+  // 4. Homoglyph-normalized (Cyrillic/etc. → ASCII so word patterns match).
+  // 5. Newline-flattened (line breaks can't slip past [^.\n] patterns).
   const zwStripped = text.replace(ZERO_WIDTH, '');
-  const flattened = zwStripped.replace(/[\r\n]+/g, ' ');
-  const variants = [text, zwStripped, flattened];
+  const nullStripped = zwStripped.replace(NULL_BYTES, '');
+  let homoStripped = nullStripped;
+  for (const [re, replacement] of HOMOGLYPHS) {
+    homoStripped = homoStripped.replace(re, replacement);
+  }
+  const flattened = homoStripped.replace(/[\r\n]+/g, ' ');
+  const variants = [text, zwStripped, nullStripped, homoStripped, flattened];
   const seen = new Set();
   let maxScore = 0;
   for (const rule of RULES) {
@@ -92,7 +127,7 @@ export function scanContent(text) {
 export function sanitize(text, { source = 'unknown', maxLen = 100_000 } = {}) {
   const raw = typeof text === 'string' ? text : JSON.stringify(text ?? '');
   const verdict = scanContent(raw);
-  const cleaned = raw.replace(ZERO_WIDTH, '').slice(0, maxLen);
+  const cleaned = raw.replace(ZERO_WIDTH, '').replace(NULL_BYTES, '').slice(0, maxLen);
   // Escape the source so it cannot break out of the attribute, and neutralize
   // any wrapper tags inside the body so untrusted content cannot forge an early
   // </external_content> and escape the evidence envelope.

@@ -7,6 +7,7 @@ import { TOOL_HANDLERS } from './tools.js';
 import { TOOL_CATALOG } from './catalog.js';
 import { assertCatalogCoherence } from './scopes.js';
 import { scanContent, sanitize, shouldBlockAutoAction } from './firewall.js';
+import { redact } from './audit.js';
 
 // Collect raw string values from a handler result so the injection firewall sees
 // real text (e.g. a forged JSON tool-call payload) rather than only
@@ -15,6 +16,7 @@ function collectText(value, acc = [], depth = 0) {
   if (value === null || value === undefined || depth > 6) return acc;
   if (typeof value === 'string') acc.push(value);
   else if (Array.isArray(value)) for (const v of value) collectText(v, acc, depth + 1);
+  // Use Object.values (own enumerable only) to avoid prototype pollution.
   else if (typeof value === 'object') for (const v of Object.values(value)) collectText(v, acc, depth + 1);
   return acc;
 }
@@ -139,6 +141,11 @@ export class Broker {
         ? { ok: true, outcome: 'success', requestId, result, security }
         : { ok: true, outcome: 'success', requestId, result };
     } catch (err) {
+      // Sanitize error details to prevent info disclosure. The raw error
+      // message (e.g. from the live Graph client) can contain internal paths,
+      // token fragments, or network topology. Only the coarse error code is
+      // surfaced; the full message is logged in the audit trail (redacted).
+      const safeReason = err.code || 'handler_error';
       this.audit.record({
         requestId,
         tool: toolName,
@@ -146,10 +153,10 @@ export class Broker {
         scopes: decision.scopes,
         sensitivity: decision.sensitivity,
         outcome: 'error',
-        reasons: [err.code || 'handler_error', err.message],
+        reasons: [safeReason, redact(err.message || '')],
         args,
       });
-      return { ok: false, outcome: 'error', requestId, reasons: [err.code || 'handler_error', err.message] };
+      return { ok: false, outcome: 'error', requestId, reasons: [safeReason] };
     }
   }
 }

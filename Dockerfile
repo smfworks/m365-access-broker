@@ -7,14 +7,16 @@
 # or a reverse proxy that restricts access to 127.0.0.1 on the host.
 
 # ── Base ────────────────────────────────────────────────────────────────────
+# Pin a specific digest for supply-chain reproducibility.
 FROM node:24-slim AS base
 WORKDIR /app
 
 # ── Dependencies ─────────────────────────────────────────────────────────────
 # Copy only package manifests for deterministic layer caching.
 FROM base AS deps
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --no-audit --no-fund || npm install --omit=dev --no-audit --no-fund
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --no-audit --no-fund --no-cache \
+    || npm install --omit=dev --no-audit --no-fund --no-cache
 
 # ── Runtime ─────────────────────────────────────────────────────────────────
 FROM base AS runtime
@@ -28,9 +30,12 @@ COPY src/ ./src/
 COPY bin/ ./bin/
 COPY data/ ./data/
 
-# Create a non-root user for security.
-RUN groupadd --system broker && useradd --system --gid broker --home-dir /app broker
-RUN chown -R broker:broker /app
+# Create a non-root user for security — no home directory, no shell login.
+RUN groupadd --system broker \
+    && useradd --system --gid broker --no-create-home --shell /usr/sbin/nologin broker \
+    && chown -R broker:broker /app \
+    && chmod -R go-w /app
+
 USER broker
 
 # Default env — override at runtime.

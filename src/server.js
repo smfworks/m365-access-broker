@@ -26,7 +26,22 @@ const broker = new Broker();
 const approvals = new ApprovalStore();
 
 const brokerKey = config.brokerKey || randomBytes(24).toString('hex');
-const approverKey = config.approverKey || randomBytes(24).toString('hex');
+let approverKey = config.approverKey || randomBytes(24).toString('hex');
+// Ensure the broker and approver keys are never the same — if they happen
+// to collide (or if the operator sets both to the same value) the agent
+// could mint its own approvals, defeating the entire gate.
+if (approverKey === brokerKey) {
+  if (!config.approverKey) {
+    // Collision on ephemeral keys: regenerate until different.
+    do {
+      approverKey = randomBytes(24).toString('hex');
+    } while (approverKey === brokerKey);
+  } else {
+    // Operator set both keys to the same value — refuse to start.
+    console.error('FATAL: BROKER_KEY and BROKER_APPROVER_KEY must be different.');
+    process.exit(1);
+  }
+}
 const ephemeral = !config.brokerKey || !config.approverKey;
 
 // Track active sockets for graceful shutdown force-close.
@@ -60,9 +75,11 @@ function readBody(req) {
       if (data.length > config.maxBodyBytes) {
         tooLarge = true;
         // Stop reading the rest of the body to avoid buffering a huge payload.
-        // We don't destroy the socket — just pause the stream and reject.
+        // Pause the stream (don't destroy — the socket must stay open for the
+        // error response to be sent back).
         req.removeAllListeners('data');
         req.removeAllListeners('end');
+        req.pause();
         reject(new Error('payload_too_large'));
       }
     });

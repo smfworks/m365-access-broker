@@ -90,13 +90,20 @@ export function cors({ allowedOrigins = [] } = {}) {
 
   return (req, res, next) => {
     const origin = req.headers.origin;
+    // Always set Vary: Origin when CORS is configured (even on non-matching
+    // responses) so caches don't poison the response for a different origin.
+    if (origins.size > 0) {
+      res.setHeader('vary', 'Origin');
+    }
     if (origin && origins.has(origin)) {
       res.setHeader('access-control-allow-origin', origin);
       res.setHeader('access-control-allow-methods', 'GET, POST, OPTIONS');
       res.setHeader('access-control-allow-headers', 'Content-Type, x-broker-key, x-approver-key, x-request-id');
       res.setHeader('access-control-expose-headers', 'x-request-id');
       res.setHeader('access-control-max-age', '86400');
-      res.setHeader('vary', 'Origin');
+      // Explicitly do NOT set Allow-Credentials: true. The broker uses custom
+      // auth headers, not cookies, so cross-origin credential requests should
+      // be blocked by the browser.
     }
 
     // Preflight
@@ -140,7 +147,11 @@ export function rateLimit({ windowMs = 60_000, maxRequests = 120, maxBurst = 30 
   if (sweepInterval.unref) sweepInterval.unref();
 
   return (req, res, next) => {
-    const ip = req.socket?.remoteAddress || 'unknown';
+    // Normalize the remote address so IPv4-mapped IPv6 addresses
+    // (::ffff:1.2.3.4) and their plain IPv4 equivalents (1.2.3.4) share the
+    // same rate-limit bucket — otherwise a local attacker gets two buckets.
+    const rawIp = req.socket?.remoteAddress || 'unknown';
+    const ip = rawIp.replace(/^::ffff:/, '');
     const now = Date.now();
     let entry = buckets.get(ip);
 
