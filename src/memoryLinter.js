@@ -129,7 +129,7 @@ export function lintMemory(memoryDir, options = {}) {
     const status = String(fm.status || '').toLowerCase();
     if (updated && (status === 'durable' || status === 'evergreen')) {
       const age = daysAgo(updated);
-      if (age != null && age > opts.staleDays) {
+      if (age !== null && age > opts.staleDays) {
         issues.push({ check: 'stale', file: rel, detail: `updated ${updated} (${age}d ago), status=${status}` });
       }
     }

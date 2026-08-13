@@ -69,7 +69,7 @@ function scrubString(value) {
 // Recursively redact secrets and truncate long strings so the audit log never
 // stores raw tokens or full private message bodies.
 export function redact(value, depth = 0) {
-  if (value == null) return value;
+  if (value === null || value === undefined) return value;
   if (typeof value === 'string') {
     const scrubbed = scrubString(value);
     return scrubbed.length > MAX_STRING
@@ -143,7 +143,7 @@ export class AuditLogger {
       resourceType: entry.resourceType || null,
       // resourceRef and reasons carry user-supplied ids/queries and error/Graph
       // path text, so they must be scrubbed like args.
-      resourceRef: entry.resourceRef != null ? redact(entry.resourceRef) : null,
+      resourceRef: entry.resourceRef !== null && entry.resourceRef !== undefined ? redact(entry.resourceRef) : null,
       scopes: entry.scopes || [],
       sensitivity: entry.sensitivity || null,
       requiresApproval: Boolean(entry.requiresApproval),

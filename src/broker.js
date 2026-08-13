@@ -12,7 +12,7 @@ import { scanContent, sanitize, shouldBlockAutoAction } from './firewall.js';
 // real text (e.g. a forged JSON tool-call payload) rather than only
 // JSON.stringify's escaped form, which can hide such markup behind \" escapes.
 function collectText(value, acc = [], depth = 0) {
-  if (value == null || depth > 6) return acc;
+  if (value === null || value === undefined || depth > 6) return acc;
   if (typeof value === 'string') acc.push(value);
   else if (Array.isArray(value)) for (const v of value) collectText(v, acc, depth + 1);
   else if (typeof value === 'object') for (const v of Object.values(value)) collectText(v, acc, depth + 1);
