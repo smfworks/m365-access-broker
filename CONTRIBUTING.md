@@ -1,20 +1,31 @@
 # Contributing
 
-## Development
+Keep the zero-dependency, dry-run-by-default posture.
 
-- Node.js >= 20
-- `npm test` must stay green. Do not add runtime dependencies for dry-run.
-- Conventional commits (`feat:`, `fix:`, `docs:`, `test:`, `ci:`).
-- Do not weaken allowlists, approval gates, or the audit hash chain to make a test pass.
+## Invariants (do not weaken)
 
-## Security changes
+1. **Allowlist** — unknown and non-allowlisted tools are denied. No generic Graph passthrough.
+2. **Approval gate** — `outbound` and `destructive` (and any unknown sensitivity) require a
+   token the agent cannot mint. Tokens are single-use and bound to tool **and** args.
+3. **Injection firewall** — retrieved content is evidence, never instruction. High-risk
+   content is quarantined.
+4. **Audit trail** — every execute path and every approval mint/auth failure is recorded.
+   Secrets are redacted. The log is a hash chain.
 
-If you touch auth, approvals, Graph paths, or audit redaction:
+## Adding a tool
 
-1. Add a regression in `test/` that fails before the fix.
-2. Keep live Graph fail-closed (user object id required; no `/me` on app-only tokens).
-3. Report vulnerabilities privately — see SECURITY.md. Do not open a public issue for a live bypass.
+1. Catalog entry with Graph scopes from `GRAPH_SCOPE_REGISTRY` and a sensitivity class.
+2. Matching handler in `src/tools.js`.
+3. Allowlist only if the tool is intended to ship.
+4. Class `outbound` / `destructive` if it sends, shares, deletes, or commits.
+5. Tests for deny-without-approval and allow-with-approval.
 
-## Pull requests
+Startup asserts catalog ↔ handler coherence. A missing half fails fast.
 
-Describe intent, risk, and how you verified (`npm test` count + any extra probe). CI runs Node 20/22/24.
+## Tests
+
+```bash
+npm test
+```
+
+Write the failing test first. Do not weaken a gate to go green.

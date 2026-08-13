@@ -19,7 +19,7 @@ approval gates, and audit logging**.
 
 - 🔐 **Auth & scopes** — single governed choke point; every Graph call carries explicit, least-privilege scopes.
 - 🧰 **Tool allowlist + risk classes** — narrow, explicit tools (read / write / outbound / destructive). No generic Graph passthrough.
-- ✅ **Approval gate** — outbound and destructive actions require a single-use, tool-scoped token the agent **cannot mint itself**.
+- ✅ **Approval gate** — outbound and destructive actions require a single-use, **request-bound** (tool + args digest) token the agent **cannot mint itself**.
 - 🧱 **Injection firewall** — retrieved M365/web content is treated as **evidence, never instruction**; embedded prompt-injection and exfiltration attempts are scanned, scored, and surfaced — never executed. See [Injection firewall](#injection-firewall).
 - 🧠 **Memory hygiene linter** — flags missing provenance, hoarding, staleness, secrets, contradictions, and unreviewed external facts in the agent's persistent memory. See [Memory hygiene linter](#memory-hygiene-linter).
 - 🧾 **Redacted audit log** — every operation attributable and logged; secrets never persisted.
@@ -54,7 +54,7 @@ OpenClaw agent ──HTTP──> Broker ──MSAL+Graph──> Microsoft 365
 | `src/catalog.js` | Tool catalog: Graph scopes + risk class per tool. |
 | `src/scopes.js`  | Scopes-as-contract: registry validation, least-privilege set, catalog↔handler coherence. |
 | `src/policy.js`  | Decides allow / deny / needs-approval. Executes nothing. |
-| `src/approvals.js` | Single-use, tool-scoped approval tokens minted by the host UI. |
+| `src/approvals.js` | Single-use, request-bound (tool + args) approval tokens minted by the host UI. |
 | `src/audit.js`   | Structured, redacted, truncated, **hash-chained** audit log. |
 | `src/graphClient.js` | Dry-run mock (default) or live MSAL + Graph. |
 | `src/tools.js`   | Narrow tool handlers. |
@@ -102,9 +102,10 @@ curl -X POST http://127.0.0.1:8787/execute \
 ## Approval gate in action
 
 The agent (`x-broker-key`) can never grant its own approval. Only the host UI
-(`x-approver-key`) can mint a **single-use, tool-scoped, short-lived** approval token via
-`/approve`. The server builds `ctx` itself and ignores any `ctx.approvalGranted` in the
-request body — a forged flag does nothing.
+(`x-approver-key`) can mint a **single-use, request-bound, short-lived** approval token via
+`/approve`. The token is bound to the exact tool **and** argument digest the approver saw.
+The server builds `ctx` itself and ignores any `ctx.approvalGranted` in the
+request body — a forged flag does nothing. Minting is audited (`approval_minted`).
 
 ```bash
 # 1. Outbound tool denied without an approval token -> HTTP 403
@@ -112,12 +113,12 @@ curl -X POST .../execute -H "x-broker-key: $AGENT" \
   -d '{"tool":"send_approved_draft","args":{"draftId":"d1"}}'
 # -> {"ok":false,"requiresApproval":true,"reasons":["approval_required:outbound"]}
 
-# 2. Host UI mints an approval (separate approver key) for that exact tool
+# 2. Host UI mints an approval for that exact tool AND args
 curl -X POST .../approve -H "x-approver-key: $APPROVER" \
-  -d '{"tool":"send_approved_draft"}'
+  -d '{"tool":"send_approved_draft","args":{"draftId":"d1"}}'
 # -> {"ok":true,"approvalId":"<uuid>"}
 
-# 3. Agent presents the approvalId — token is consumed and the action runs
+# 3. Agent presents the approvalId with the same args — token is consumed and the action runs
 curl -X POST .../execute -H "x-broker-key: $AGENT" \
   -d '{"tool":"send_approved_draft","args":{"draftId":"d1"},"approvalId":"<uuid>"}'
 # -> {"ok":true,"outcome":"success", ... }
@@ -211,9 +212,10 @@ Exit `0` = intact, `2` = a break was detected (reports the offending `seq` and r
 
 ## Status
 
-MVP. Read/draft/approval/audit paths implemented and tested in dry-run. Live Graph calls are
-wired but unverified against a real tenant. Roadmap: PKCE interactive auth, per-tool rate
-limits.
+**0.2.0** production-hardening. Dry-run control plane (policy, request-bound approvals,
+hash-chained audit, injection quarantine) is the supported production path. Live Graph is
+fail-closed: client-credentials only, requires `BROKER_GRAPH_USER_ID`, and is unverified
+against a real tenant. Roadmap: delegated PKCE auth.
 
 ## Injection firewall
 
@@ -224,8 +226,8 @@ it as data.
 
 The broker runs it automatically on every read tool that returns external content
 (`search_mail`, `get_mail`, `search_files`, `get_file_text`). Findings ride along in the
-result and the audit log — **the read still succeeds, but embedded commands are surfaced,
-never executed**:
+result and the audit log. High-risk content is **quarantined** (raw body withheld) —
+embedded commands are surfaced, never executed:
 
 ```json
 { "ok": true, "result": { ... },
@@ -263,7 +265,7 @@ Exit code `2` when issues exist, so it can gate memory promotion or CI.
 ## Testing
 
 ```bash
-npm test                       # full suite (79 tests)
+npm test                       # full suite (91 tests)
 node --test test/policy.test.js # a single file
 ```
 

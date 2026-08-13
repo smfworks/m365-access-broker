@@ -10,3 +10,7 @@ audit.log
 
 # clawpatch local tooling state
 .clawpatch/
+
+# audit write-failure sidecar
+*.log.fallback
+audit-ci.tmp.log
