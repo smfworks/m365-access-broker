@@ -6,7 +6,7 @@ process.env.BROKER_DRY_RUN = 'true';
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { server, start } = await import('../src/server.js');
+const { server, start, broker } = await import('../src/server.js');
 
 let base;
 before(async () => {
@@ -23,9 +23,12 @@ function post(path, body, headers = {}) {
   });
 }
 
-test('health is public', async () => {
+test('health is public and sets security headers', async () => {
   const r = await fetch(base + '/health');
   assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(r.headers.get('cache-control'), 'no-store');
+  assert.equal(r.headers.get('x-frame-options'), 'DENY');
 });
 
 test('execute without broker key is 401', async () => {
@@ -106,4 +109,46 @@ test('approval token is single-use and tool-scoped', async () => {
     { 'x-broker-key': 'agent-test-key' }
   );
   assert.equal(reuse.status, 403);
+});
+
+test('approval mint is recorded on the audit trail', async () => {
+  const captured = [];
+  const previous = broker.audit.sink;
+  broker.audit.sink = (line) => {
+    captured.push(JSON.parse(line));
+    if (typeof previous === 'function') previous(line);
+  };
+  try {
+    const mint = await post(
+      '/approve',
+      { tool: 'delete_file', args: { id: 'f-audit' } },
+      { 'x-approver-key': 'approver-test-key' }
+    );
+    assert.equal(mint.status, 200);
+    const rec = captured.find((e) => e.outcome === 'approval_minted');
+    assert.ok(rec, 'expected approval_minted audit record');
+    assert.equal(rec.tool, 'delete_file');
+    assert.equal(rec.user, 'approver');
+    assert.equal(rec.args.id, 'f-audit');
+  } finally {
+    broker.audit.sink = previous;
+  }
+});
+
+test('failed approver auth is recorded on the audit trail', async () => {
+  const captured = [];
+  const previous = broker.audit.sink;
+  broker.audit.sink = (line) => {
+    captured.push(JSON.parse(line));
+    if (typeof previous === 'function') previous(line);
+  };
+  try {
+    const r = await post('/approve', { tool: 'delete_file' }, { 'x-approver-key': 'wrong' });
+    assert.equal(r.status, 401);
+    const rec = captured.find((e) => e.outcome === 'unauthorized');
+    assert.ok(rec, 'expected unauthorized audit record');
+    assert.equal(rec.tool, '/approve');
+  } finally {
+    broker.audit.sink = previous;
+  }
 });

@@ -33,3 +33,12 @@ test('unknown / empty id is rejected', () => {
   assert.equal(store.consume('nope', 'send_approved_draft'), false);
   assert.equal(store.consume(undefined, 'send_approved_draft'), false);
 });
+
+test('minting is rate-limited so the store cannot be flooded', () => {
+  const store = new ApprovalStore({ maxMintsPerWindow: 3, mintWindowMs: 60_000 });
+  store.create('send_approved_draft', { draftId: 'a' });
+  store.create('send_approved_draft', { draftId: 'b' });
+  store.create('send_approved_draft', { draftId: 'c' });
+  assert.throws(() => store.create('send_approved_draft', { draftId: 'd' }), /approval_rate_limited/);
+  assert.equal(store.tokens.size, 3);
+});

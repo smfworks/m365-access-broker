@@ -22,7 +22,13 @@ const approverKey = config.approverKey || randomBytes(24).toString('hex');
 const ephemeral = !config.brokerKey || !config.approverKey;
 
 function send(res, status, body) {
-  res.writeHead(status, { 'Content-Type': 'application/json' });
+  res.writeHead(status, {
+    'Content-Type': 'application/json',
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
+    'X-Frame-Options': 'DENY',
+    'Referrer-Policy': 'no-referrer',
+  });
   res.end(JSON.stringify(body));
 }
 
@@ -31,7 +37,10 @@ function readBody(req) {
     let data = '';
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 1_000_000) reject(new Error('payload_too_large'));
+      if (data.length > 1_000_000) {
+        req.destroy();
+        reject(new Error('payload_too_large'));
+      }
     });
     req.on('end', () => {
       if (!data) return resolve({});
@@ -54,6 +63,10 @@ function headerEquals(actual, expected) {
   return timingSafeEqual(a, b);
 }
 
+function auditControlPlane(entry) {
+  broker.audit.record(entry);
+}
+
 const server = createServer(async (req, res) => {
   try {
     if (req.method === 'GET' && req.url === '/health') {
@@ -68,17 +81,52 @@ const server = createServer(async (req, res) => {
     // Host-UI-only: mint an approval token for a specific tool.
     if (req.method === 'POST' && req.url === '/approve') {
       if (!headerEquals(req.headers['x-approver-key'], approverKey)) {
+        auditControlPlane({
+          tool: '/approve',
+          user: 'unknown',
+          outcome: 'unauthorized',
+          reasons: ['unauthorized_approver'],
+        });
         return send(res, 401, { ok: false, error: 'unauthorized_approver' });
       }
       const body = await readBody(req);
       if (!body.tool) return send(res, 400, { ok: false, error: 'missing tool' });
       // Bind the approval to the exact tool AND args the approver saw.
-      const approvalId = approvals.create(body.tool, body.args || {});
+      let approvalId;
+      try {
+        approvalId = approvals.create(body.tool, body.args || {});
+      } catch (err) {
+        if (err.code === 'RATE_LIMITED') {
+          auditControlPlane({
+            tool: body.tool,
+            user: 'approver',
+            outcome: 'denied',
+            reasons: ['approval_rate_limited'],
+            args: body.args || {},
+          });
+          return send(res, 429, { ok: false, error: 'approval_rate_limited' });
+        }
+        throw err;
+      }
+      auditControlPlane({
+        tool: body.tool,
+        user: 'approver',
+        outcome: 'approval_minted',
+        requiresApproval: true,
+        approvalGranted: false,
+        args: body.args || {},
+      });
       return send(res, 200, { ok: true, approvalId, expiresInMs: approvals.ttlMs });
     }
 
     // Everything below requires the agent (broker) key.
     if (!headerEquals(req.headers['x-broker-key'], brokerKey)) {
+      auditControlPlane({
+        tool: req.url,
+        user: 'unknown',
+        outcome: 'unauthorized',
+        reasons: ['unauthorized'],
+      });
       return send(res, 401, { ok: false, error: 'unauthorized' });
     }
 
@@ -105,16 +153,21 @@ const server = createServer(async (req, res) => {
     return send(res, 404, { ok: false, error: 'not_found' });
   } catch (err) {
     // Never leak internals/stack — only a coarse, known error label.
-    const known = ['payload_too_large', 'invalid_json'].includes(err.message)
+    const known = ['payload_too_large', 'invalid_json', 'approval_rate_limited'].includes(err.message)
       ? err.message
       : 'bad_request';
-    return send(res, 400, { ok: false, error: known });
+    return send(res, err.code === 'RATE_LIMITED' ? 429 : 400, { ok: false, error: known });
   }
 });
 
 export function start(port = config.port) {
-  return new Promise((resolve) => {
-    server.listen(port, '127.0.0.1', () => {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
       const addr = server.address();
       console.log(
         `OpenClaw M365 Broker listening on http://127.0.0.1:${addr.port} ` +
@@ -129,7 +182,9 @@ export function start(port = config.port) {
         console.log(`  x-approver-key: ${approverKey}`);
       }
       resolve(addr.port);
-    });
+    };
+    server.once('error', onError);
+    server.listen(port, '127.0.0.1', onListening);
   });
 }
 

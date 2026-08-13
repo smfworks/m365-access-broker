@@ -152,15 +152,20 @@ logged at startup, and served at `GET /health`.
 
 ## Going live
 
-1. Register a single-tenant Entra app (delegated auth, minimal scopes).
-2. `cp .env.example .env`, set `BROKER_DRY_RUN=false`, `MS_TENANT_ID`, `MS_CLIENT_ID`.
+Live Graph is **opt-in and fail-closed**. Dry-run remains the default.
+
+1. Register a single-tenant Entra app. Grant only the least-privilege scopes the broker prints at startup / `GET /health`.
+2. `cp .env.example .env` and set:
+   - `BROKER_DRY_RUN=false`
+   - `MS_TENANT_ID` / `MS_CLIENT_ID` / `MS_CLIENT_SECRET` (GUIDs for tenant and client)
+   - `BROKER_GRAPH_USER_ID` — the Entra **user object id** to act on
 3. `npm install @azure/msal-node` (loaded lazily; not needed for dry-run).
 
-Grant the app exactly the scopes the broker reports as **least-privilege** at startup (and
-at `GET /health`) — nothing more. The app-only token request uses `.default`, which returns
-precisely the permissions consented on the registration, so least privilege is enforced at
-the registration, not per call. Start with read-only scopes (`User.Read`, `Calendars.Read`,
-`Mail.Read`, `Files.Read`) and add write scopes only after the read paths work.
+**Why a user object id?** The current live client uses the client-credentials (application-only) flow. App-only tokens **cannot** call `/me`. The broker therefore requires `BROKER_GRAPH_USER_ID` and issues Graph calls as `/users/{id}/…`. Starting live mode without that id fails at client construction instead of failing later on every `/me` request.
+
+Delegated auth (authorization code + PKCE, acting as the signed-in user) is still the recommended long-term target and is **not** implemented in 0.2.0. Do not treat app-only Graph as a substitute for user consent.
+
+The app-only token request uses `.default`, which returns precisely the permissions consented on the registration. Start with read-only scopes and add write scopes only after the read paths work.
 
 ## Configuration
 
@@ -170,12 +175,13 @@ All configuration is via environment variables (or a `.env` file — copy `.env.
 | Variable | Default | Purpose |
 |---|---|---|
 | `BROKER_DRY_RUN` | `true` | `true` = mock Graph, no network. Set `false` for live Graph. |
-| `BROKER_PORT` | `8787` | Loopback HTTP port (binds `127.0.0.1` only). |
+| `BROKER_PORT` | `8787` | Loopback HTTP port (binds `127.0.0.1` only). Must be an integer 1–65535. |
 | `BROKER_KEY` | _(ephemeral)_ | Agent credential (`x-broker-key`) for read/draft/execute. Auto-generated + printed if unset. |
 | `BROKER_APPROVER_KEY` | _(ephemeral)_ | Host-UI credential (`x-approver-key`) for minting approvals. Keep separate from `BROKER_KEY`. |
-| `BROKER_AUDIT_LOG` | `audit.log` | Path to the JSON-lines audit log. |
-| `MS_TENANT_ID` | — | Entra tenant ID (live mode). |
-| `MS_CLIENT_ID` | — | Entra app (client) ID (live mode). |
+| `BROKER_AUDIT_LOG` | `audit.log` | JSON-lines audit log. **Relative to the repo root only** — absolute paths and `..` are rejected. |
+| `BROKER_GRAPH_USER_ID` | — | Entra user object id for live app-only Graph (`/users/{id}`). Required when `BROKER_DRY_RUN=false`. |
+| `MS_TENANT_ID` | — | Entra tenant ID (live mode; must be a GUID when a client secret is set). |
+| `MS_CLIENT_ID` | — | Entra app (client) ID (live mode; must be a GUID when a client secret is set). |
 | `MS_CLIENT_SECRET` | — | Client secret (not needed for public-client PKCE). |
 | `MS_REDIRECT_URI` | `http://localhost:3000/auth/callback` | OAuth redirect (live mode). |
 

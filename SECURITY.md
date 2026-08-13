@@ -12,7 +12,8 @@ tagged release.
 | Version | Supported |
 |---|---|
 | `main` (latest) | ✅ |
-| `0.1.x` | ✅ |
+| `0.2.x` | ✅ |
+| `0.1.x` | security fixes only |
 | older | ❌ |
 
 ## Reporting a vulnerability

@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 22]
+        node: [20, 22, 24]
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,6 +30,9 @@ jobs:
         run: npm test
         env:
           BROKER_DRY_RUN: "true"
+
+      - name: Verify audit chain
+        run: node bin/verify-audit.js
 
       - name: Memory linter CLI (end-to-end)
         shell: bash

@@ -1,4 +1,4 @@
-import { config, hasRealCredentials } from './config.js';
+import { config, hasRealCredentials, liveGraphUserRoot, assertLiveMsIdentifiers } from './config.js';
 
 // Graph client. In dry-run mode it returns deterministic mock data so the
 // broker is fully runnable without an app registration or network access.
@@ -35,7 +35,9 @@ class DryRunGraphClient {
   }
 
   async searchMail({ query = '', limit = 5 } = {}) {
-    return Array.from({ length: Math.min(limit, 2) }, (_, i) => ({
+    assertSafeSearchQuery(query);
+    const top = assertSafeLimit(limit);
+    return Array.from({ length: Math.min(top, 2) }, (_, i) => ({
       id: `msg-${i + 1}`,
       subject: `Re: ${query || 'project'} (${i + 1})`,
       from: 'aiona@example.com',
@@ -53,6 +55,7 @@ class DryRunGraphClient {
   }
 
   async searchFiles({ query = '' } = {}) {
+    assertSafeSearchQuery(query);
     return [{ id: 'file-1', name: `${query || 'notes'}.md`, size: 1024 }];
   }
 
@@ -91,6 +94,40 @@ function seg(id, kind = 'id') {
   return encodeURIComponent(id);
 }
 
+// Search queries are interpolated into Graph $search / OData function calls.
+// Reject control characters and quotes so they cannot break out of the
+// surrounding syntax. Length is capped so a caller cannot pad a request.
+export function assertSafeSearchQuery(query, { maxLen = 200 } = {}) {
+  if (query == null || query === '') return '';
+  if (typeof query !== 'string') {
+    const err = new Error('invalid_query');
+    err.code = 'BAD_ARGS';
+    throw err;
+  }
+  if (query.length > maxLen) {
+    const err = new Error('query_too_long');
+    err.code = 'BAD_ARGS';
+    throw err;
+  }
+  if (/[\x00-\x1f\\'"]/.test(query)) {
+    const err = new Error('invalid_query');
+    err.code = 'BAD_ARGS';
+    throw err;
+  }
+  return query;
+}
+
+export function assertSafeLimit(limit, { fallback = 5, max = 25 } = {}) {
+  if (limit == null || limit === '') return fallback;
+  const n = Number(limit);
+  if (!Number.isInteger(n) || n < 1 || n > max) {
+    const err = new Error('invalid_limit');
+    err.code = 'BAD_ARGS';
+    throw err;
+  }
+  return n;
+}
+
 // Live client skeleton. Token acquisition is delegated to MSAL, which is an
 // optional dependency loaded only when real credentials are configured.
 class LiveGraphClient {
@@ -98,6 +135,8 @@ class LiveGraphClient {
     this.mode = 'live';
     this.base = 'https://graph.microsoft.com/v1.0';
     this._token = null;
+    // App-only tokens cannot call /me. Bind every user-scoped path to an explicit object id.
+    this.userRoot = liveGraphUserRoot(config.ms.userId);
   }
 
   async _getToken() {
@@ -154,7 +193,7 @@ class LiveGraphClient {
   }
 
   async me() {
-    return this._fetch('/me');
+    return this._fetch(this.userRoot);
   }
 
   async listTodayEvents() {
@@ -163,31 +202,36 @@ class LiveGraphClient {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     const data = await this._fetch(
-      `/me/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
+      `${this.userRoot}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
     );
     return data.value || [];
   }
 
   async searchMail({ query = '', limit = 5 } = {}) {
+    const q = assertSafeSearchQuery(query);
+    const top = assertSafeLimit(limit);
     const data = await this._fetch(
-      `/me/messages?$search="${encodeURIComponent(query)}"&$top=${limit}`
+      `${this.userRoot}/messages?$search="${encodeURIComponent(q)}"&$top=${top}`
     );
     return data.value || [];
   }
 
   async getMail({ id }) {
-    return this._fetch(`/me/messages/${seg(id)}`);
+    return this._fetch(`${this.userRoot}/messages/${seg(id)}`);
   }
 
   async searchFiles({ query = '' } = {}) {
-    const data = await this._fetch(`/me/drive/root/search(q='${encodeURIComponent(query)}')`);
+    const q = assertSafeSearchQuery(query);
+    const data = await this._fetch(
+      `${this.userRoot}/drive/root/search(q='${encodeURIComponent(q)}')`
+    );
     return data.value || [];
   }
 
   async getFileText({ id }) {
     // The /content endpoint returns raw file bytes, not JSON — read as text.
     const token = await this._getToken();
-    const res = await fetch(`${this.base}/me/drive/items/${seg(id)}/content`, {
+    const res = await fetch(`${this.base}${this.userRoot}/drive/items/${seg(id)}/content`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -202,7 +246,7 @@ class LiveGraphClient {
       body: { contentType: 'HTML', content: body },
       toRecipients: (to || []).map((address) => ({ emailAddress: { address } })),
     };
-    const data = await this._fetch('/me/messages', {
+    const data = await this._fetch(`${this.userRoot}/messages`, {
       method: 'POST',
       body: JSON.stringify(message),
     });
@@ -210,12 +254,14 @@ class LiveGraphClient {
   }
 
   async sendDraft({ draftId }) {
-    await this._fetch(`/me/messages/${seg(draftId, 'draftId')}/send`, { method: 'POST' });
+    await this._fetch(`${this.userRoot}/messages/${seg(draftId, 'draftId')}/send`, {
+      method: 'POST',
+    });
     return { draftId, status: 'sent', sent: true };
   }
 
   async shareFile({ id, recipients }) {
-    const data = await this._fetch(`/me/drive/items/${seg(id)}/invite`, {
+    const data = await this._fetch(`${this.userRoot}/drive/items/${seg(id)}/invite`, {
       method: 'POST',
       body: JSON.stringify({
         recipients: (recipients || []).map((address) => ({ email: address })),
@@ -228,7 +274,7 @@ class LiveGraphClient {
   }
 
   async deleteFile({ id }) {
-    await this._fetch(`/me/drive/items/${seg(id)}`, { method: 'DELETE' });
+    await this._fetch(`${this.userRoot}/drive/items/${seg(id)}`, { method: 'DELETE' });
     return { id, status: 'deleted' };
   }
 }
@@ -237,5 +283,7 @@ export function createGraphClient() {
   if (config.dryRun || !hasRealCredentials()) {
     return new DryRunGraphClient();
   }
+  assertLiveMsIdentifiers(config.ms);
+  liveGraphUserRoot(config.ms.userId);
   return new LiveGraphClient();
 }

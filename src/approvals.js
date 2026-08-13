@@ -25,16 +25,25 @@ export function requestDigest(tool, args = {}) {
 // approver key) calls /approve to mint a single-use, request-scoped, short-lived
 // token. /execute only sets ctx.approvalGranted after consuming a valid token.
 export class ApprovalStore {
-  constructor({ ttlMs = 120_000, maxTokens = 1000 } = {}) {
+  constructor({
+    ttlMs = 120_000,
+    maxTokens = 1000,
+    mintWindowMs = 60_000,
+    maxMintsPerWindow = 60,
+  } = {}) {
     this.ttlMs = ttlMs;
     this.maxTokens = maxTokens;
+    this.mintWindowMs = mintWindowMs;
+    this.maxMintsPerWindow = maxMintsPerWindow;
     this.tokens = new Map();
+    this.mintTimes = [];
   }
 
   create(tool, args = {}) {
     // Evict expired tokens on every mint so the Map cannot grow unbounded with
     // approvals that were never consumed.
     this.sweep();
+    this._enforceMintRate();
     const id = randomUUID();
     this.tokens.set(id, {
       tool,
@@ -66,5 +75,15 @@ export class ApprovalStore {
     for (const [id, rec] of this.tokens) {
       if (rec.expiresAt < now) this.tokens.delete(id);
     }
+  }
+
+  _enforceMintRate(now = Date.now()) {
+    this.mintTimes = this.mintTimes.filter((t) => now - t < this.mintWindowMs);
+    if (this.mintTimes.length >= this.maxMintsPerWindow) {
+      const err = new Error('approval_rate_limited');
+      err.code = 'RATE_LIMITED';
+      throw err;
+    }
+    this.mintTimes.push(now);
   }
 }

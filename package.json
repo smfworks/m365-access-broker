@@ -1,6 +1,6 @@
 {
   "name": "m365-access-broker",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local M365 Access Broker for OpenClaw — the control plane between a local-first autonomous agent and Microsoft Graph. Enforces auth, scopes, allowlists, approval gates, and audit logging.",
   "type": "module",
   "main": "src/broker.js",
