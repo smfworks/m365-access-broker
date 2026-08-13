@@ -34,10 +34,23 @@ function bool(value, fallback) {
   return /^(1|true|yes|on)$/i.test(String(value).trim());
 }
 
+function int(value, fallback) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : fallback;
+}
+
+function stringList(value, fallback) {
+  if (!value || typeof value !== 'string') return fallback;
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 export const config = {
   projectRoot,
   dryRun: bool(process.env.BROKER_DRY_RUN, true),
-  port: Number(process.env.BROKER_PORT || 8787),
+  port: int(process.env.BROKER_PORT, 8787),
   brokerKey: process.env.BROKER_KEY || '',
   approverKey: process.env.BROKER_APPROVER_KEY || '',
   auditLog: resolve(projectRoot, process.env.BROKER_AUDIT_LOG || 'audit.log'),
@@ -47,6 +60,18 @@ export const config = {
     clientSecret: process.env.MS_CLIENT_SECRET || '',
     redirectUri: process.env.MS_REDIRECT_URI || 'http://localhost:3000/auth/callback',
   },
+  // ── Server hardening ──────────────────────────────────────────────────────
+  // Maximum request body size in bytes (default 1 MB).
+  maxBodyBytes: int(process.env.BROKER_MAX_BODY_BYTES, 1_048_576),
+  // Rate limiting: fixed-window per-IP.
+  rateLimitWindowMs: int(process.env.BROKER_RATE_LIMIT_WINDOW_MS, 60_000),
+  rateLimitMax: int(process.env.BROKER_RATE_LIMIT_MAX, 120),
+  rateLimitBurst: int(process.env.BROKER_RATE_LIMIT_BURST, 30),
+  // CORS: comma-separated list of allowed origins. Empty = no CORS headers
+  // (loopback-only; browser cross-origin requests are blocked by default).
+  corsAllowedOrigins: stringList(process.env.BROKER_CORS_ORIGINS, []),
+  // Graceful shutdown: how long to wait for in-flight requests (ms).
+  shutdownTimeoutMs: int(process.env.BROKER_SHUTDOWN_TIMEOUT_MS, 10_000),
 };
 
 export function hasRealCredentials() {

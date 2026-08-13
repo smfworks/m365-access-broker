@@ -3,6 +3,14 @@ import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import { config } from './config.js';
 import { Broker } from './broker.js';
 import { ApprovalStore } from './approvals.js';
+import {
+  requestId,
+  securityHeaders,
+  cors,
+  rateLimit,
+  requestLogger,
+  gracefulShutdown,
+} from './middleware.js';
 
 // Minimal local HTTP API exposing the broker to a local-first agent.
 //
@@ -21,6 +29,23 @@ const brokerKey = config.brokerKey || randomBytes(24).toString('hex');
 const approverKey = config.approverKey || randomBytes(24).toString('hex');
 const ephemeral = !config.brokerKey || !config.approverKey;
 
+// Track active sockets for graceful shutdown force-close.
+const sockets = new Set();
+
+// ── Middleware stack ─────────────────────────────────────────────────────────
+const corsAllowedOrigins = config.corsAllowedOrigins;
+const mw = [
+  requestId(),
+  securityHeaders(),
+  cors({ allowedOrigins: corsAllowedOrigins }),
+  rateLimit({
+    windowMs: config.rateLimitWindowMs,
+    maxRequests: config.rateLimitMax,
+    maxBurst: config.rateLimitBurst,
+  }),
+  requestLogger({ log: process.stdout }),
+];
+
 function send(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -29,11 +54,20 @@ function send(res, status, body) {
 function readBody(req) {
   return new Promise((resolve, reject) => {
     let data = '';
+    let tooLarge = false;
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 1_000_000) reject(new Error('payload_too_large'));
+      if (data.length > config.maxBodyBytes) {
+        tooLarge = true;
+        // Stop reading the rest of the body to avoid buffering a huge payload.
+        // We don't destroy the socket — just pause the stream and reject.
+        req.removeAllListeners('data');
+        req.removeAllListeners('end');
+        reject(new Error('payload_too_large'));
+      }
     });
     req.on('end', () => {
+      if (tooLarge) return; // already rejected
       if (!data) return resolve({});
       try {
         resolve(JSON.parse(data));
@@ -54,62 +88,97 @@ function headerEquals(actual, expected) {
   return timingSafeEqual(a, b);
 }
 
-const server = createServer(async (req, res) => {
-  try {
-    if (req.method === 'GET' && req.url === '/health') {
-      return send(res, 200, {
-        ok: true,
-        mode: broker.graph.mode,
-        dryRun: config.dryRun,
-        requiredScopes: broker.policy.requiredScopes(),
+// ── Route handler (runs after middleware) ──────────────────────────────────
+async function handleRoute(req, res) {
+  if (req.method === 'GET' && req.url === '/health') {
+    return send(res, 200, {
+      ok: true,
+      mode: broker.graph.mode,
+      dryRun: config.dryRun,
+      requiredScopes: broker.policy.requiredScopes(),
+    });
+  }
+
+  // Host-UI-only: mint an approval token for a specific tool.
+  if (req.method === 'POST' && req.url === '/approve') {
+    if (!headerEquals(req.headers['x-approver-key'], approverKey)) {
+      return send(res, 401, { ok: false, error: 'unauthorized_approver' });
+    }
+    const body = await readBody(req);
+    if (!body.tool) return send(res, 400, { ok: false, error: 'missing tool' });
+    // Bind the approval to the exact tool AND args the approver saw.
+    const approvalId = approvals.create(body.tool, body.args || {});
+    return send(res, 200, { ok: true, approvalId, expiresInMs: approvals.ttlMs });
+  }
+
+  // Everything below requires the agent (broker) key.
+  if (!headerEquals(req.headers['x-broker-key'], brokerKey)) {
+    return send(res, 401, { ok: false, error: 'unauthorized' });
+  }
+
+  if (req.method === 'GET' && req.url === '/tools') {
+    return send(res, 200, { ok: true, tools: broker.listTools() });
+  }
+
+  if (req.method === 'POST' && req.url === '/execute') {
+    const body = await readBody(req);
+    if (!body.tool) return send(res, 400, { ok: false, error: 'missing tool' });
+
+    // Build ctx server-side. The agent CANNOT set approvalGranted directly;
+    // it can only present an approvalId minted via /approve by the host UI.
+    const ctx = { user: 'local-agent', requestId: req.id };
+    if (body.approvalId) {
+      // The token only validates for the same tool + args it was minted for.
+      ctx.approvalGranted = approvals.consume(body.approvalId, body.tool, body.args || {});
+    }
+
+    const result = await broker.execute(body.tool, body.args || {}, ctx);
+    return send(res, result.ok ? 200 : 403, result);
+  }
+
+  return send(res, 404, { ok: false, error: 'not_found' });
+}
+
+// ── Server with middleware chain ───────────────────────────────────────────
+const server = createServer((req, res) => {
+  let i = 0;
+
+  function next() {
+    if (i < mw.length) {
+      const layer = mw[i++];
+      layer(req, res, next);
+    } else {
+      // All middleware passed — handle the route.
+      handleRoute(req, res).catch((err) => {
+        // Never leak internals/stack — only a coarse, known error label.
+        const known = ['payload_too_large', 'invalid_json'].includes(err.message)
+          ? err.message
+          : 'bad_request';
+        if (!res.headersSent) {
+          send(res, 400, { ok: false, error: known });
+        }
       });
     }
-
-    // Host-UI-only: mint an approval token for a specific tool.
-    if (req.method === 'POST' && req.url === '/approve') {
-      if (!headerEquals(req.headers['x-approver-key'], approverKey)) {
-        return send(res, 401, { ok: false, error: 'unauthorized_approver' });
-      }
-      const body = await readBody(req);
-      if (!body.tool) return send(res, 400, { ok: false, error: 'missing tool' });
-      // Bind the approval to the exact tool AND args the approver saw.
-      const approvalId = approvals.create(body.tool, body.args || {});
-      return send(res, 200, { ok: true, approvalId, expiresInMs: approvals.ttlMs });
-    }
-
-    // Everything below requires the agent (broker) key.
-    if (!headerEquals(req.headers['x-broker-key'], brokerKey)) {
-      return send(res, 401, { ok: false, error: 'unauthorized' });
-    }
-
-    if (req.method === 'GET' && req.url === '/tools') {
-      return send(res, 200, { ok: true, tools: broker.listTools() });
-    }
-
-    if (req.method === 'POST' && req.url === '/execute') {
-      const body = await readBody(req);
-      if (!body.tool) return send(res, 400, { ok: false, error: 'missing tool' });
-
-      // Build ctx server-side. The agent CANNOT set approvalGranted directly;
-      // it can only present an approvalId minted via /approve by the host UI.
-      const ctx = { user: 'local-agent' };
-      if (body.approvalId) {
-        // The token only validates for the same tool + args it was minted for.
-        ctx.approvalGranted = approvals.consume(body.approvalId, body.tool, body.args || {});
-      }
-
-      const result = await broker.execute(body.tool, body.args || {}, ctx);
-      return send(res, result.ok ? 200 : 403, result);
-    }
-
-    return send(res, 404, { ok: false, error: 'not_found' });
-  } catch (err) {
-    // Never leak internals/stack — only a coarse, known error label.
-    const known = ['payload_too_large', 'invalid_json'].includes(err.message)
-      ? err.message
-      : 'bad_request';
-    return send(res, 400, { ok: false, error: known });
   }
+
+  next();
+});
+
+// Track sockets for graceful shutdown.
+server.on('connection', (socket) => {
+  sockets.add(socket);
+  socket.on('close', () => sockets.delete(socket));
+});
+
+// ── Graceful shutdown ──────────────────────────────────────────────────────
+const shutdownCleanup = gracefulShutdown(server, {
+  timeoutMs: config.shutdownTimeoutMs,
+  sockets,
+  onShutdown: async () => {
+    // Flush any in-flight audit writes (the AuditLogger uses sync writes,
+    // so there is nothing to drain, but the hook is here for future use).
+    console.log('Shutdown hook complete.');
+  },
 });
 
 export function start(port = config.port) {
@@ -138,4 +207,4 @@ if (isMain) {
   start();
 }
 
-export { server, broker, approvals, brokerKey, approverKey };
+export { server, broker, approvals, brokerKey, approverKey, shutdownCleanup, sockets };
