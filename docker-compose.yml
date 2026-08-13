@@ -1,0 +1,51 @@
+# docker-compose.yml for the M365 Access Broker.
+#
+# Usage:
+#   docker compose up -d                    # start in dry-run mode
+#   docker compose up -d --build             # rebuild after code changes
+#
+# Override BROKER_KEY / BROKER_APPROVER_KEY in production (see .env.example).
+# The broker binds 127.0.0.1 inside the container; the port mapping exposes
+# it on the host. Restrict host access with a reverse proxy or firewall.
+
+services:
+  broker:
+    build: .
+    container_name: m365-access-broker
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    environment:
+      # ── Core ────────────────────────────────────────────────────────────
+      BROKER_DRY_RUN: "true"
+      BROKER_PORT: "8787"
+      # Set these in production — see .env.example
+      # BROKER_KEY: "your-agent-key"
+      # BROKER_APPROVER_KEY: "your-approver-key"
+      # ── Rate limiting ────────────────────────────────────────────────────
+      BROKER_RATE_LIMIT_MAX: "120"
+      BROKER_RATE_LIMIT_BURST: "30"
+      # ── CORS (comma-separated origins) ──────────────────────────────────
+      # BROKER_CORS_ORIGINS: "http://localhost:3000"
+      # ── Body size limit (bytes) ─────────────────────────────────────────
+      BROKER_MAX_BODY_BYTES: "1048576"
+      # ── Graceful shutdown timeout (ms) ──────────────────────────────────
+      BROKER_SHUTDOWN_TIMEOUT_MS: "10000"
+      # ── Audit log ────────────────────────────────────────────────────────
+      BROKER_AUDIT_LOG: "/app/data/audit.log"
+      # ── Microsoft Graph (live mode only) ───────────────────────────────
+      # MS_TENANT_ID: ""
+      # MS_CLIENT_ID: ""
+      # MS_CLIENT_SECRET: ""
+    volumes:
+      # Persist the audit log across container restarts.
+      - broker-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8787/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+volumes:
+  broker-data:

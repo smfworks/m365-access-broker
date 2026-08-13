@@ -1,0 +1,12 @@
+node_modules
+npm-debug.log
+.env
+.git
+.github
+.gitignore
+.clawreview
+.clawpatch
+test
+*.md
+audit.log
+*.fallback
