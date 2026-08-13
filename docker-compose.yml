@@ -32,7 +32,7 @@ services:
       # ── Graceful shutdown timeout (ms) ──────────────────────────────────
       BROKER_SHUTDOWN_TIMEOUT_MS: "10000"
       # ── Audit log ────────────────────────────────────────────────────────
-      BROKER_AUDIT_LOG: "/app/data/audit.log"
+      BROKER_AUDIT_LOG: "data/audit.log"
       # ── Microsoft Graph (live mode only) ───────────────────────────────
       # MS_TENANT_ID: ""
       # MS_CLIENT_ID: ""
