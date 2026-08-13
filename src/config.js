@@ -59,7 +59,10 @@ export const config = {
     clientId: process.env.MS_CLIENT_ID || '',
     clientSecret: process.env.MS_CLIENT_SECRET || '',
     redirectUri: process.env.MS_REDIRECT_URI || 'http://localhost:3000/auth/callback',
+    // App-only Graph cannot call /me. Require a user object id (or UPN).
+    userId: process.env.MS_USER_ID || process.env.BROKER_GRAPH_USER_ID || '',
   },
+  auditHmacKey: process.env.BROKER_AUDIT_HMAC_KEY || '',
   // ── Server hardening ──────────────────────────────────────────────────────
   // Maximum request body size in bytes (default 1 MB).
   maxBodyBytes: int(process.env.BROKER_MAX_BODY_BYTES, 1_048_576),
