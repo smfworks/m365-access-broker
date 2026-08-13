@@ -23,9 +23,13 @@ function post(path, body, headers = {}) {
   });
 }
 
-test('health is public', async () => {
-  const r = await fetch(base + '/health');
+test('health is public and echoes a request id', async () => {
+  const r = await fetch(base + '/health', { headers: { 'x-request-id': 'req-audit-1' } });
   assert.equal(r.status, 200);
+  assert.equal(r.headers.get('x-request-id'), 'req-audit-1');
+  const j = await r.json();
+  assert.equal(j.ok, true);
+  assert.ok(Array.isArray(j.requiredScopes));
 });
 
 test('execute without broker key is 401', async () => {
@@ -106,4 +110,14 @@ test('approval token is single-use and tool-scoped', async () => {
     { 'x-broker-key': 'agent-test-key' }
   );
   assert.equal(reuse.status, 403);
+});
+
+test('oversized JSON body is rejected', async () => {
+  const r = await fetch(base + '/execute', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-broker-key': 'agent-test-key' },
+    body: '{"tool":"search_mail","pad":"' + 'x'.repeat(1_000_100) + '"}',
+  });
+  assert.equal(r.status, 413);
+  assert.equal((await r.json()).error, 'payload_too_large');
 });

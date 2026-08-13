@@ -19,7 +19,7 @@ import { scanContent, sanitize } from '../src/firewall.js';
 import { Broker } from '../src/broker.js';
 import { PolicyEngine } from '../src/policy.js';
 import { requiresApprovalByClass, isKnownSensitivity } from '../src/catalog.js';
-import { hasRealCredentials } from '../src/config.js';
+import { hasRealCredentials, assertDistinctKeys } from '../src/config.js';
 import { lintMemory } from '../src/memoryLinter.js';
 
 // fnd_auth_01 — approval bound to (tool, args)
@@ -185,6 +185,12 @@ test('fnd_pol_02: missing granted scope denies the call', () => {
 // fnd_cfg_01 — live path requires a complete credential set
 test('fnd_cfg_01: hasRealCredentials requires a client secret', () => {
   assert.equal(hasRealCredentials(), false); // tenant+client set, secret missing
+});
+
+test('fnd_cfg_02: broker and approver keys must be distinct', () => {
+  assert.throws(() => assertDistinctKeys('same', 'same'), /must be distinct/);
+  assert.doesNotThrow(() => assertDistinctKeys('agent', 'approver'));
+  assert.doesNotThrow(() => assertDistinctKeys('', ''));
 });
 
 // fnd_mem_01 — secrets in frontmatter are caught

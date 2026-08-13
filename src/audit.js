@@ -1,5 +1,5 @@
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, createHmac } from 'node:crypto';
 
 const MAX_STRING = 240;
 
@@ -17,12 +17,15 @@ function stableStringify(value) {
 }
 
 // Hash of a record's content (everything except the hash field) chained to the
-// previous record's hash. Any edit, reorder, or deletion changes a downstream
-// hash and is therefore detectable.
-function chainHash(base, prevHash) {
-  return createHash('sha256')
-    .update(stableStringify(base) + '\u0000' + prevHash)
-    .digest('hex');
+// previous record's hash. When hmacKey is set this is HMAC-SHA256 — a writer
+// who can edit the log file cannot forge a valid chain without the key. When
+// hmacKey is empty this is unkeyed SHA-256 (backward compatible).
+function chainHash(base, prevHash, hmacKey) {
+  const payload = stableStringify(base) + '\u0000' + prevHash;
+  if (hmacKey) {
+    return createHmac('sha256', hmacKey).update(payload).digest('hex');
+  }
+  return createHash('sha256').update(payload).digest('hex');
 }
 
 // Normalized substrings that mark a key as secret-bearing. Matched against a
@@ -92,9 +95,10 @@ export function redact(value, depth = 0) {
 }
 
 export class AuditLogger {
-  constructor({ logPath, sink, genesisHash = AUDIT_GENESIS_HASH } = {}) {
+  constructor({ logPath, sink, genesisHash = AUDIT_GENESIS_HASH, hmacKey = '' } = {}) {
     this.logPath = logPath;
     this.genesisHash = genesisHash;
+    this.hmacKey = hmacKey || '';
     // sink lets tests capture entries without touching disk.
     this.sink = sink || ((line) => appendFileSync(this.logPath, line + '\n'));
     // Chain state. Recover the tail from an existing log so the chain continues
@@ -154,8 +158,11 @@ export class AuditLogger {
       resultSummary: typeof entry.resultSummary === 'string'
         ? redact(entry.resultSummary)
         : entry.resultSummary || null,
+      // Tag the algorithm so a verifier can refuse to accept an unkeyed chain
+      // when an HMAC key is configured (and vice versa).
+      mac: this.hmacKey ? 'hmac-sha256' : 'sha256',
     };
-    const hash = chainHash(base, this.prevHash);
+    const hash = chainHash(base, this.prevHash, this.hmacKey);
     const record = { ...base, hash };
 
     // Advance the chain as soon as the link is formed, before attempting the
@@ -192,7 +199,7 @@ export class AuditLogger {
 // chain is intact: monotonic seq, prevHash linkage, and a recomputed content
 // hash that matches. Returns the first break found. `records` may also be a raw
 // newline-delimited log string.
-export function verifyAuditChain(records, { genesisHash = AUDIT_GENESIS_HASH } = {}) {
+export function verifyAuditChain(records, { genesisHash = AUDIT_GENESIS_HASH, hmacKey = '' } = {}) {
   let parsed = records;
   if (typeof records === 'string') {
     parsed = records
@@ -211,7 +218,11 @@ export function verifyAuditChain(records, { genesisHash = AUDIT_GENESIS_HASH } =
       return { ok: false, index: i, seq: rec.seq, reason: 'prevhash_mismatch', count: parsed.length };
     }
     const { hash, persisted, persistError, ...base } = rec;
-    const recomputed = chainHash(base, rec.prevHash);
+    const expectedMac = hmacKey ? 'hmac-sha256' : 'sha256';
+    if (base.mac && base.mac !== expectedMac) {
+      return { ok: false, index: i, seq: rec.seq, reason: `mac_mismatch:expected_${expectedMac}_got_${base.mac}`, count: parsed.length };
+    }
+    const recomputed = chainHash(base, rec.prevHash, hmacKey);
     if (recomputed !== hash) {
       return { ok: false, index: i, seq: rec.seq, reason: 'hash_mismatch', count: parsed.length };
     }
@@ -223,7 +234,7 @@ export function verifyAuditChain(records, { genesisHash = AUDIT_GENESIS_HASH } =
 
 // Convenience wrapper: verify a chain stored at a file path. A missing file is
 // a valid empty chain.
-export function verifyAuditFile(path) {
+export function verifyAuditFile(path, { hmacKey = '' } = {}) {
   if (!existsSync(path)) return { ok: true, count: 0, head: AUDIT_GENESIS_HASH };
-  return verifyAuditChain(readFileSync(path, 'utf8'));
+  return verifyAuditChain(readFileSync(path, 'utf8'), { hmacKey });
 }

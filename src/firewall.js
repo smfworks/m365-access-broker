@@ -37,6 +37,26 @@ export const RULES = Object.freeze([
 
 const ZERO_WIDTH = /[\u200B-\u200D\uFEFF\u2060]/g;
 
+// Decode a conservative set of HTML entities so `Ignor&#101;` / `&lt;tool_call`
+// cannot slip past the rules. Numeric code points outside the Unicode range
+// are dropped rather than thrown.
+function decodeEntities(text) {
+  return text
+    .replace(/&#x([0-9a-fA-F]{1,6});/g, (_, h) => {
+      const n = parseInt(h, 16);
+      return n <= 0x10ffff ? String.fromCodePoint(n) : '';
+    })
+    .replace(/&#(\d{1,7});/g, (_, d) => {
+      const n = Number(d);
+      return n <= 0x10ffff ? String.fromCodePoint(n) : '';
+    })
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/gi, '&');
+}
+
 function riskFromScore(score) {
   if (score >= SEVERITY.HIGH) return 'high';
   if (score >= SEVERITY.MEDIUM) return 'medium';
@@ -47,11 +67,12 @@ function riskFromScore(score) {
 /**
  * Scan untrusted text. Returns findings + a max-severity risk label.
  *
- * To defeat trivial evasions, every rule is evaluated against three views of the
- * text: the original (so zero-width/base64/HTML-comment rules still see their
- * markers), a copy with zero-width characters removed (so hidden separators
- * cannot downgrade risk), and a newline-flattened copy (so line breaks inserted
- * between trigger words cannot slip past bounded `[^.\n]` patterns).
+ * To defeat trivial evasions, every rule is evaluated against several views of
+ * the text: the original (so zero-width/base64/HTML-comment rules still see
+ * their markers), a copy with zero-width characters removed, a newline-flattened
+ * copy (so line breaks cannot slip past bounded `[^\.\n]` patterns), and an
+ * NFKC + HTML-entity-decoded copy (so fullwidth letters and `&#NNN;` encodings
+ * cannot hide trigger words).
  * @param {string} text
  */
 export function scanContent(text) {
@@ -61,12 +82,16 @@ export function scanContent(text) {
   }
   const zwStripped = text.replace(ZERO_WIDTH, '');
   const flattened = zwStripped.replace(/[\r\n]+/g, ' ');
-  const variants = [text, zwStripped, flattened];
+  const normalized = decodeEntities(zwStripped).normalize('NFKC').replace(/[\r\n]+/g, ' ');
+  const variants = [text, zwStripped, flattened, normalized];
   const seen = new Set();
   let maxScore = 0;
   for (const rule of RULES) {
+    // Clone so a future /g flag cannot leak lastIndex across calls.
+    const re = new RegExp(rule.re.source, rule.re.flags);
     for (const variant of variants) {
-      const m = rule.re.exec(variant);
+      re.lastIndex = 0;
+      const m = re.exec(variant);
       if (!m) continue;
       if (!seen.has(rule.id)) {
         seen.add(rule.id);

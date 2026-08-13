@@ -153,14 +153,16 @@ logged at startup, and served at `GET /health`.
 ## Going live
 
 1. Register a single-tenant Entra app (delegated auth, minimal scopes).
-2. `cp .env.example .env`, set `BROKER_DRY_RUN=false`, `MS_TENANT_ID`, `MS_CLIENT_ID`.
-3. `npm install @azure/msal-node` (loaded lazily; not needed for dry-run).
+2. `cp .env.example .env`, set `BROKER_DRY_RUN=false`, `MS_TENANT_ID`, `MS_CLIENT_ID`, `MS_CLIENT_SECRET`.
+3. For the current app-only (client-credentials) skeleton, also set `MS_USER_ID` to the Entra user object id the broker should act on. Microsoft Graph `/me` is a delegated-user endpoint and will not accept an application token — the broker therefore calls `/users/{MS_USER_ID}` instead.
+4. `npm install @azure/msal-node` (loaded lazily; not needed for dry-run).
+5. Set `BROKER_AUDIT_HMAC_KEY` to a long random value so the audit chain is HMAC-SHA256 rather than unkeyed SHA-256.
 
 Grant the app exactly the scopes the broker reports as **least-privilege** at startup (and
 at `GET /health`) — nothing more. The app-only token request uses `.default`, which returns
 precisely the permissions consented on the registration, so least privilege is enforced at
-the registration, not per call. Start with read-only scopes (`User.Read`, `Calendars.Read`,
-`Mail.Read`, `Files.Read`) and add write scopes only after the read paths work.
+the registration, not per call. Start with read-only application permissions that match
+those scopes and add write permissions only after the read paths work.
 
 ## Configuration
 
@@ -173,11 +175,15 @@ All configuration is via environment variables (or a `.env` file — copy `.env.
 | `BROKER_PORT` | `8787` | Loopback HTTP port (binds `127.0.0.1` only). |
 | `BROKER_KEY` | _(ephemeral)_ | Agent credential (`x-broker-key`) for read/draft/execute. Auto-generated + printed if unset. |
 | `BROKER_APPROVER_KEY` | _(ephemeral)_ | Host-UI credential (`x-approver-key`) for minting approvals. Keep separate from `BROKER_KEY`. |
-| `BROKER_AUDIT_LOG` | `audit.log` | Path to the JSON-lines audit log. |
+| `BROKER_AUDIT_LOG` | `audit.log` | Path to the JSON-lines audit log. Relative paths stay under the project root. |
+| `BROKER_AUDIT_HMAC_KEY` | _(unset)_ | HMAC-SHA256 key for the audit chain. Recommended on any shared host. |
+| `BROKER_RATE_LIMIT_MAX` | `120` | Max `/execute` and `/approve` calls per window, per credential. |
+| `BROKER_RATE_LIMIT_WINDOW_MS` | `60000` | Rate-limit window in milliseconds. |
 | `MS_TENANT_ID` | — | Entra tenant ID (live mode). |
 | `MS_CLIENT_ID` | — | Entra app (client) ID (live mode). |
 | `MS_CLIENT_SECRET` | — | Client secret (not needed for public-client PKCE). |
-| `MS_REDIRECT_URI` | `http://localhost:3000/auth/callback` | OAuth redirect (live mode). |
+| `MS_USER_ID` | — | Entra user object id for live app-only calls (`/users/{id}`). |
+| `MS_REDIRECT_URI` | `http://localhost:3000/auth/callback` | OAuth redirect (live / future delegated auth). |
 
 > The agent key and approver key are **intentionally separate** so the agent can never grant
 > its own approval. There is no "no auth" mode — if a key is unset, an ephemeral one is
@@ -192,9 +198,11 @@ never persisted.
 
 The log is a **tamper-evident hash chain**: every entry carries a monotonic `seq`, the
 prior entry's `hash` (`prevHash`), and its own content `hash`. Editing, reordering, or
-deleting any entry breaks a downstream hash and is detectable. The chain resumes unbroken
-across restarts (recovered from the log tail), and a `requestId` correlates all entries
-emitted while handling one broker request. Verify integrity any time:
+deleting any entry breaks a downstream hash and is detectable. Set `BROKER_AUDIT_HMAC_KEY`
+so the link is HMAC-SHA256 — without a key, anyone who can write the file can restamp a
+valid unkeyed chain. The chain resumes unbroken across restarts (recovered from the log
+tail), and a `requestId` correlates all entries emitted while handling one broker request
+(also returned as `x-request-id`). Verify integrity any time:
 
 ```bash
 npm run verify:audit            # verifies $BROKER_AUDIT_LOG (default audit.log)
@@ -205,9 +213,10 @@ Exit `0` = intact, `2` = a break was detected (reports the offending `seq` and r
 
 ## Status
 
-MVP. Read/draft/approval/audit paths implemented and tested in dry-run. Live Graph calls are
-wired but unverified against a real tenant. Roadmap: PKCE interactive auth, per-tool rate
-limits.
+MVP. Read/draft/approval/audit paths implemented and tested in dry-run. Live Graph calls
+are wired for the app-only skeleton (`/users/{MS_USER_ID}`) but unverified against a real
+tenant. Roadmap: PKCE interactive (delegated) auth, per-tool quotas beyond the in-process
+rate limit.
 
 ## Injection firewall
 
@@ -257,7 +266,7 @@ Exit code `2` when issues exist, so it can gate memory promotion or CI.
 ## Testing
 
 ```bash
-npm test                       # full suite (79 tests)
+npm test                       # full suite (node:test, 100 tests)
 node --test test/policy.test.js # a single file
 ```
 
@@ -269,7 +278,7 @@ audit-chain integrity (`test/audit-chain.test.js`) are covered as regression sui
 ## Project layout
 
 ```text
-src/        broker, policy, approvals, audit, scopes, graphClient, tools, catalog, firewall, memoryLinter, server
+src/        broker, policy, approvals, audit, scopes, graphClient, tools, catalog, firewall, memoryLinter, server, validate, rateLimit
 test/       unit + integration tests and fixtures
 bin/        lint-memory.js, verify-audit.js CLI entry points
 data/       injection-corpus.json red-team eval set

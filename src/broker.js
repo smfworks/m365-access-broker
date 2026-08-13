@@ -24,7 +24,7 @@ function collectText(value, acc = [], depth = 0) {
 export class Broker {
   constructor({ policy, audit, graph } = {}) {
     this.policy = policy || new PolicyEngine();
-    this.audit = audit || new AuditLogger({ logPath: config.auditLog });
+    this.audit = audit || new AuditLogger({ logPath: config.auditLog, hmacKey: config.auditHmacKey });
     this.graph = graph || createGraphClient();
     // Structural coherence: every catalog tool has a handler and vice versa, and
     // every allowlisted name exists in the catalog. Prevents an undeclared
@@ -139,6 +139,7 @@ export class Broker {
         ? { ok: true, outcome: 'success', requestId, result, security }
         : { ok: true, outcome: 'success', requestId, result };
     } catch (err) {
+      const code = err.code || 'handler_error';
       this.audit.record({
         requestId,
         tool: toolName,
@@ -146,10 +147,15 @@ export class Broker {
         scopes: decision.scopes,
         sensitivity: decision.sensitivity,
         outcome: 'error',
-        reasons: [err.code || 'handler_error', err.message],
+        reasons: [code, err.message],
         args,
       });
-      return { ok: false, outcome: 'error', requestId, reasons: [err.code || 'handler_error', err.message] };
+      // Coarse labels only on the wire. BAD_ARGS / CONFIG are operator-facing
+      // contracts; Graph and unexpected errors stay in the audit log.
+      const publicReasons = code === 'BAD_ARGS' || code === 'CONFIG'
+        ? [code, err.message]
+        : [code === 'GRAPH' ? 'graph_error' : 'handler_error'];
+      return { ok: false, outcome: 'error', requestId, reasons: publicReasons };
     }
   }
 }

@@ -1,4 +1,4 @@
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 
 // Deterministic, key-order-independent serialization so the same logical args
 // always produce the same digest.
@@ -58,8 +58,11 @@ export class ApprovalStore {
     if (!rec) return false;
     if (rec.expiresAt < Date.now()) return false;
     if (rec.tool !== tool) return false;
-    if (rec.digest !== requestDigest(tool, args)) return false;
-    return true;
+    const expected = requestDigest(tool, args);
+    const a = Buffer.from(rec.digest, 'hex');
+    const b = Buffer.from(expected, 'hex');
+    if (a.length !== b.length || a.length === 0) return false;
+    return timingSafeEqual(a, b);
   }
 
   sweep(now = Date.now()) {

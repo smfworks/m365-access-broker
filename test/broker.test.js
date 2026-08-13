@@ -81,7 +81,7 @@ test('audit never stores secret args in clear', async () => {
   assert.equal(entries.at(-1).args.access_token, '[REDACTED]');
 });
 
-test('firewall flags injection in retrieved mail and never blocks the read', async () => {
+test('firewall flags injection in retrieved mail; high-risk content is quarantined', async () => {
   const entries = [];
   const audit = new AuditLogger({ sink: (line) => entries.push(JSON.parse(line)) });
   const graph = {
@@ -95,6 +95,43 @@ test('firewall flags injection in retrieved mail and never blocks the read', asy
   assert.equal(r.ok, true); // read still succeeds — content is returned as data
   assert.ok(r.security);
   assert.equal(r.security.risk, 'high');
+  assert.equal(r.blocked, true);
+  assert.equal(r.result.quarantined, true);
   assert.ok(r.security.findings.length > 0);
   assert.ok(entries.at(-1).reasons.some((x) => x.startsWith('injection:')));
+});
+
+test('unexpected handler errors are not returned to the caller', async () => {
+  const entries = [];
+  const audit = new AuditLogger({ sink: (line) => entries.push(JSON.parse(line)) });
+  const graph = {
+    mode: 'test',
+    async searchMail() {
+      throw new Error('internal graph failure at calendarView');
+    },
+  };
+  const broker = new Broker({ policy: new PolicyEngine(), audit, graph });
+  const r = await broker.execute('search_mail', { query: 'x' });
+  assert.equal(r.ok, false);
+  assert.deepEqual(r.reasons, ['handler_error']);
+  assert.ok(!JSON.stringify(r).includes('calendarView'));
+  assert.ok(entries.at(-1).reasons.some((x) => String(x).includes('calendarView')));
+});
+
+test('invalid email on create_email_draft is BAD_ARGS', async () => {
+  const { broker } = makeBroker();
+  const r = await broker.execute('create_email_draft', {
+    to: 'not-an-email',
+    subject: 'hi',
+    body: 'x',
+  });
+  assert.equal(r.ok, false);
+  assert.equal(r.reasons[0], 'BAD_ARGS');
+});
+
+test('path-shaped id is rejected before it reaches Graph', async () => {
+  const { broker } = makeBroker();
+  const r = await broker.execute('get_mail', { id: '../messages/1' });
+  assert.equal(r.ok, false);
+  assert.equal(r.reasons[0], 'BAD_ARGS');
 });

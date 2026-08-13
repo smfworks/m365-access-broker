@@ -49,6 +49,12 @@ High-value areas for this project:
 - **Injection firewall** — retrieved M365/web content is evidence, never instruction;
   evasions that get embedded commands executed are in scope.
 - **Audit integrity** — secrets must never be persisted in clear; entries must be attributable.
+  When `BROKER_AUDIT_HMAC_KEY` is set, the chain is HMAC-SHA256 and cannot be restamped
+  without the key.
+- **Credential separation** — `BROKER_KEY` and `BROKER_APPROVER_KEY` must be distinct; the
+  process refuses to start if they are equal.
+- **Live Graph targeting** — app-only tokens must not call `/me`; set `MS_USER_ID` so calls
+  go to `/users/{id}` until delegated (PKCE) auth is available.
 
 Out of scope: issues that require a compromised host or already-leaked broker/approver keys
 (the broker assumes the local host and its key store are trusted).

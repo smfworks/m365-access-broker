@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, isAbsolute } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -34,18 +34,40 @@ function bool(value, fallback) {
   return /^(1|true|yes|on)$/i.test(String(value).trim());
 }
 
+function int(value, fallback) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+// Keep the audit log inside the project unless the operator passes an
+// explicit absolute path (their machine, their choice).
+function auditLogPath(value) {
+  const raw = value || 'audit.log';
+  return isAbsolute(raw) ? raw : resolve(projectRoot, raw);
+}
+
+export function assertDistinctKeys(brokerKey, approverKey) {
+  if (brokerKey && approverKey && brokerKey === approverKey) {
+    throw new Error('BROKER_KEY and BROKER_APPROVER_KEY must be distinct');
+  }
+}
+
 export const config = {
   projectRoot,
   dryRun: bool(process.env.BROKER_DRY_RUN, true),
   port: Number(process.env.BROKER_PORT || 8787),
   brokerKey: process.env.BROKER_KEY || '',
   approverKey: process.env.BROKER_APPROVER_KEY || '',
-  auditLog: resolve(projectRoot, process.env.BROKER_AUDIT_LOG || 'audit.log'),
+  auditLog: auditLogPath(process.env.BROKER_AUDIT_LOG),
+  auditHmacKey: process.env.BROKER_AUDIT_HMAC_KEY || '',
+  rateLimitMax: int(process.env.BROKER_RATE_LIMIT_MAX, 120),
+  rateLimitWindowMs: int(process.env.BROKER_RATE_LIMIT_WINDOW_MS, 60_000),
   ms: {
     tenantId: process.env.MS_TENANT_ID || '',
     clientId: process.env.MS_CLIENT_ID || '',
     clientSecret: process.env.MS_CLIENT_SECRET || '',
     redirectUri: process.env.MS_REDIRECT_URI || 'http://localhost:3000/auth/callback',
+    userId: process.env.MS_USER_ID || '',
   },
 };
 

@@ -119,3 +119,29 @@ test('audit: hash covers redacted (persisted) form, secrets never enter the chai
   // Verification recomputes over the redacted form on disk and still matches.
   assert.equal(verifyAuditChain(records()).ok, true);
 });
+
+test('audit: HMAC chain verifies only with the matching key', () => {
+  const lines = [];
+  const key = 'unit-test-hmac-key';
+  const logger = new AuditLogger({ sink: (line) => lines.push(line), hmacKey: key });
+  logger.record({ tool: 'm365_status', outcome: 'success' });
+  logger.record({ tool: 'search_mail', outcome: 'success' });
+  assert.equal(JSON.parse(lines[0]).mac, 'hmac-sha256');
+  assert.equal(verifyAuditChain(lines.join('\n'), { hmacKey: key }).ok, true);
+  assert.equal(verifyAuditChain(lines.join('\n')).ok, false); // missing key
+  assert.equal(verifyAuditChain(lines.join('\n'), { hmacKey: 'wrong-key' }).ok, false);
+});
+
+test('audit: HMAC rejects a chain restamped with unkeyed SHA-256', () => {
+  const lines = [];
+  const key = 'unit-test-hmac-key';
+  const logger = new AuditLogger({ sink: (line) => lines.push(line), hmacKey: key });
+  logger.record({ tool: 'delete_file', outcome: 'success' });
+  const rec = JSON.parse(lines[0]);
+  rec.outcome = 'denied';
+  rec.mac = 'sha256';
+  // Even if an attacker recomputes an unkeyed hash, the mac tag + HMAC check fail.
+  const v = verifyAuditChain([rec], { hmacKey: key });
+  assert.equal(v.ok, false);
+  assert.match(v.reason, /mac_mismatch|hash_mismatch/);
+});
