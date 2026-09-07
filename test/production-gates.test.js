@@ -81,5 +81,8 @@ test('broker execute returns sanitized reasons on handler throw', async () => {
   const result = await broker.execute('search_mail', { query: 'x' }, { user: 't' });
   assert.equal(result.ok, false);
   assert.deepEqual(result.reasons, ['handler_error']);
-  assert.match(entries[0].reasons.join(' '), /supersecret/);
+  const audited = entries[0].reasons.join(' ');
+  assert.match(audited, /handler_error/);
+  assert.doesNotMatch(audited, /supersecret/);
+  assert.match(audited, /REDACTED/);
 });
