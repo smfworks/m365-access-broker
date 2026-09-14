@@ -1,4 +1,4 @@
-import { config } from './config.js';
+import { config, publicHandlerReasons } from './config.js';
 import { randomUUID } from 'node:crypto';
 import { PolicyEngine } from './policy.js';
 import { AuditLogger } from './audit.js';
@@ -156,7 +156,7 @@ export class Broker {
         reasons: [safeReason, redact(err.message || '')],
         args,
       });
-      return { ok: false, outcome: 'error', requestId, reasons: [safeReason] };
+      return { ok: false, outcome: 'error', requestId, reasons: publicHandlerReasons(err) };
     }
   }
 }

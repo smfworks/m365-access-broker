@@ -1,4 +1,4 @@
-import { config, hasRealCredentials } from './config.js';
+import { config, hasRealCredentials, liveGraphUserRoot, assertLiveMsIdentifiers } from './config.js';
 
 // Graph client. In dry-run mode it returns deterministic mock data so the
 // broker is fully runnable without an app registration or network access.
@@ -100,6 +100,7 @@ class LiveGraphClient {
     this.mode = 'live';
     this.base = 'https://graph.microsoft.com/v1.0';
     this._token = null;
+    this.userRoot = liveGraphUserRoot(config.ms.userId);
   }
 
   async _getToken() {
@@ -156,7 +157,7 @@ class LiveGraphClient {
   }
 
   async me() {
-    return this._fetch('/me');
+    return this._fetch(this.userRoot);
   }
 
   async listTodayEvents() {
@@ -165,7 +166,7 @@ class LiveGraphClient {
     const end = new Date(start);
     end.setDate(end.getDate() + 1);
     const data = await this._fetch(
-      `/me/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
+      `${this.userRoot}/calendarView?startDateTime=${start.toISOString()}&endDateTime=${end.toISOString()}`
     );
     return data.value || [];
   }
@@ -177,27 +178,27 @@ class LiveGraphClient {
     const safeQuery = String(query).replace(/["\\]/g, '\\$&').slice(0, 1000);
     const safeLimit = Math.min(Math.max(1, Number(limit) || 5), 50);
     const data = await this._fetch(
-      `/me/messages?$search="${encodeURIComponent(safeQuery)}"&$top=${safeLimit}`
+      `${this.userRoot}/messages?$search="${encodeURIComponent(safeQuery)}"&$top=${safeLimit}`
     );
     return data.value || [];
   }
 
   async getMail({ id }) {
-    return this._fetch(`/me/messages/${seg(id)}`);
+    return this._fetch(`${this.userRoot}/messages/${seg(id)}`);
   }
 
   async searchFiles({ query = '' } = {}) {
     // Sanitize the search query: escape single quotes (which delimit the
     // q='...' parameter) and limit length.
     const safeQuery = String(query).replace(/'/g, "''").slice(0, 1000);
-    const data = await this._fetch(`/me/drive/root/search(q='${encodeURIComponent(safeQuery)}')`);
+    const data = await this._fetch(`${this.userRoot}/drive/root/search(q='${encodeURIComponent(safeQuery)}')`);
     return data.value || [];
   }
 
   async getFileText({ id }) {
     // The /content endpoint returns raw file bytes, not JSON — read as text.
     const token = await this._getToken();
-    const res = await fetch(`${this.base}/me/drive/items/${seg(id)}/content`, {
+    const res = await fetch(`${this.base}${this.userRoot}/drive/items/${seg(id)}/content`, {
       headers: { Authorization: `Bearer ${token}` },
     });
     if (!res.ok) {
@@ -212,7 +213,7 @@ class LiveGraphClient {
       body: { contentType: 'HTML', content: body },
       toRecipients: (to || []).map((address) => ({ emailAddress: { address } })),
     };
-    const data = await this._fetch('/me/messages', {
+    const data = await this._fetch(`${this.userRoot}/messages`, {
       method: 'POST',
       body: JSON.stringify(message),
     });
@@ -220,12 +221,12 @@ class LiveGraphClient {
   }
 
   async sendDraft({ draftId }) {
-    await this._fetch(`/me/messages/${seg(draftId, 'draftId')}/send`, { method: 'POST' });
+    await this._fetch(`${this.userRoot}/messages/${seg(draftId, 'draftId')}/send`, { method: 'POST' });
     return { draftId, status: 'sent', sent: true };
   }
 
   async shareFile({ id, recipients }) {
-    const data = await this._fetch(`/me/drive/items/${seg(id)}/invite`, {
+    const data = await this._fetch(`${this.userRoot}/drive/items/${seg(id)}/invite`, {
       method: 'POST',
       body: JSON.stringify({
         recipients: (recipients || []).map((address) => ({ email: address })),
@@ -238,7 +239,7 @@ class LiveGraphClient {
   }
 
   async deleteFile({ id }) {
-    await this._fetch(`/me/drive/items/${seg(id)}`, { method: 'DELETE' });
+    await this._fetch(`${this.userRoot}/drive/items/${seg(id)}`, { method: 'DELETE' });
     return { id, status: 'deleted' };
   }
 }
@@ -247,5 +248,7 @@ export function createGraphClient() {
   if (config.dryRun || !hasRealCredentials()) {
     return new DryRunGraphClient();
   }
+  assertLiveMsIdentifiers(config.ms);
+  liveGraphUserRoot(config.ms.userId);
   return new LiveGraphClient();
 }
